@@ -1,0 +1,5 @@
+include *.md
+include LICENSE.txt
+graft neural_toolkits/extensions/include
+include versioneer.py
+include neural_toolkits/_version.py
