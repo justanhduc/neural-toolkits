@@ -1,5 +1,5 @@
 include *.md
-include LICENSE.txt
+include LICENSE
 graft neural_toolkits/extensions/include
 include versioneer.py
 include neural_toolkits/_version.py
