@@ -92,8 +92,7 @@ def test_convtranspose2d_layer(device, filter_size, stride, padding, output_size
     shape = (2, 3, 10, 10)
     n_filters = 5
 
-    conv_ntk = ntk.ConvTranspose2d(shape_sym[1], n_filters, filter_size, stride=stride, padding=padding,
-                                   output_size=output_size).to(device)
+    conv_ntk = ntk.ConvTranspose2d(shape_sym[1], n_filters, filter_size, stride=stride, padding=padding).to(device)
     conv_pt = T.nn.ConvTranspose2d(shape[1], n_filters, filter_size, padding=padding, stride=stride).to(device)
     sanity_check(conv_ntk, conv_pt, shape, device=device)
 

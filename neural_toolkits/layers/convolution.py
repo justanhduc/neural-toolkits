@@ -198,7 +198,7 @@ class ConvTranspose2d(nn.ConvTranspose2d, _LayerMethod):
 
     def extra_repr(self):
         s = super().extra_repr()
-        s += 'activation={}'.format(self.activation.__name__)
+        s += ', activation={}'.format(self.activation.__name__)
         return s
 
 
