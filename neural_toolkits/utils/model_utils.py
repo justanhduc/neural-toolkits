@@ -8,12 +8,12 @@ import contextlib
 
 import torch
 
-__all__ = ['ExponentialMovingAverage']
+__all__ = ['ModelEMA']
 
 
 # Partially based on:
 # https://github.com/tensorflow/tensorflow/blob/r1.13/tensorflow/python/training/moving_averages.py
-class ExponentialMovingAverage:
+class ModelEMA:
     """
     Maintains (exponential) moving average of a set of parameters.
     Args:
