@@ -58,6 +58,7 @@ class Conv2d(nn.Conv2d, _LayerMethod):
                  dilation: int_or_tup_int = 1,
                  groups: int = 1,
                  bias: bool = True,
+                 padding_mode: str = 'zeros',
                  activation: Optional[Union[str, Callable]] = None,
                  weights_init: Callable = None,
                  bias_init: Callable = None,
@@ -66,14 +67,13 @@ class Conv2d(nn.Conv2d, _LayerMethod):
         self.activation = utils.function(activation, **kwargs)
         self.weights_init = weights_init
         self.bias_init = bias_init
-        self.border_mode = padding
         dilation = _pair(dilation)
 
         self.ks = [fs + (fs - 1) * (d - 1) for fs, d in zip(kernel_size, dilation)]
         if isinstance(padding, str):
             if padding == 'half':
                 padding = [k >> 1 for k in self.ks]
-            elif padding in ('valid', 'ref', 'rep'):
+            elif padding == 'valid':
                 padding = (0,) * len(self.ks)
             elif padding == 'full':
                 padding = [k - 1 for k in self.ks]
@@ -85,15 +85,9 @@ class Conv2d(nn.Conv2d, _LayerMethod):
             raise ValueError('padding must be a str/tuple/int, got %s' % type(padding))
 
         super().__init__(in_channels, out_channels, kernel_size, stride, tuple(padding), dilation, bias=bias,
-                         groups=groups)
-
-        self.pad = Eye()
-        if self.border_mode in ('ref', 'rep'):
-            padding = (self.ks[1] // 2, self.ks[1] // 2, self.ks[0] // 2, self.ks[0] // 2)
-            self.pad = nn.ReflectionPad2d(padding) if self.border_mode == 'ref' else nn.ReplicationPad2d(padding)
+                         groups=groups, padding_mode=padding_mode)
 
     def forward(self, input, *args, **kwargs):
-        input = self.pad(input)
         input = self.activation(super().forward(input))
         return input
 
@@ -164,6 +158,7 @@ class ConvTranspose2d(nn.ConvTranspose2d, _LayerMethod):
                  groups: int = 1,
                  bias: bool = True,
                  dilation: int = 1,
+                 padding_mode: str = 'zeros',
                  activation: Optional[Union[str, Callable]] = None,
                  weights_init: Callable = None,
                  bias_init: Callable = None,
@@ -186,7 +181,7 @@ class ConvTranspose2d(nn.ConvTranspose2d, _LayerMethod):
             padding = (padding, padding)
 
         super().__init__(in_channels, out_channels, kernel_size, stride, padding, output_padding, groups, bias,
-                         dilation)
+                         dilation, padding_mode)
 
     def forward(self, input: T.Tensor, output_size=None):
         output = self.activation(
@@ -360,6 +355,7 @@ class DepthwiseSepConv2d(Sequential):
                  padding: Union[int_or_tup_int, str] = 'half',
                  dilation: int_or_tup_int = 1,
                  bias: bool = True,
+                 padding_mode: str = 'zeros',
                  activation: Optional[Union[str, Callable]] = None,
                  **kwargs):
         super().__init__()
@@ -372,9 +368,10 @@ class DepthwiseSepConv2d(Sequential):
         self.activation = utils.function(activation, **kwargs)
         intermediate = in_channels * depth_mul
         self.depthwise = Conv2d(in_channels, intermediate, kernel_size, stride=stride,
-                                padding=padding, dilation=dilation, groups=in_channels, bias=bias)
+                                padding=padding, dilation=dilation, groups=in_channels, bias=bias,
+                                padding_mode=padding_mode)
         self.pointwise = Conv2d(intermediate, out_channels, 1, activation=activation, padding=padding,
-                                dilation=dilation, bias=False, **kwargs)
+                                dilation=dilation, bias=False, padding_mode=padding_mode, **kwargs)
 
     def extra_repr(self):
         s = ('{in_channels}, {out_channels}, kernel_size={kernel_size}'

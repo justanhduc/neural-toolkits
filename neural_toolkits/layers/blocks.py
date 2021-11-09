@@ -3,7 +3,7 @@ from torch.nn.modules.utils import _pair
 
 from .abstract import Sequential, Module, Eye
 from .convolution import Conv2d, FC
-from .normalization import BatchNorm2d, InstanceNorm2d, LayerNorm, BatchNorm1d, InstanceNorm1d, FeatureNorm1d
+from .normalization import BatchNorm2d, InstanceNorm2d, LayerNorm, BatchNorm1d, InstanceNorm1d, FeatureNorm1d, GroupNorm
 from .. import utils
 from ..utils import add_custom_repr
 
@@ -73,7 +73,7 @@ class ConvNormAct(Sequential):
     """
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding='half', dilation=1, groups=1,
-                 bias=True, activation='relu', weights_init=None, bias_init=None, eps=1e-5, momentum=0.1,
+                 bias=True, padding_mode='zeros', activation='relu', weights_init=None, bias_init=None, eps=1e-5, momentum=0.1,
                  affine=True, track_running_stats=True, no_scale=False, norm_layer='bn', **kwargs):
         super().__init__()
         self.in_channels = in_channels
@@ -86,11 +86,19 @@ class ConvNormAct(Sequential):
         self.norm_layer = norm_layer
         self.conv = Conv2d(in_channels, out_channels, kernel_size, weights_init=weights_init, bias=bias,
                            bias_init=bias_init, padding=padding, stride=stride, dilation=dilation, activation=None,
-                           groups=groups, **kwargs)
+                           groups=groups, padding_mode=padding_mode, **kwargs)
 
         if isinstance(norm_layer, str):
-            norm_layer = BatchNorm2d if norm_layer == 'bn' else InstanceNorm2d if norm_layer == 'in' \
-                else LayerNorm if norm_layer == 'ln' else norm_layer
+            if norm_layer == 'bn':
+                norm_layer = BatchNorm2d
+            elif norm_layer == 'in':
+                norm_layer == InstanceNorm2d
+            elif norm_layer == 'ln':
+                norm_layer = LayerNorm
+            elif norm_layer == 'gn':
+                norm_layer = GroupNorm
+            else:
+                raise NotImplementedError
         else:
             assert callable(norm_layer), 'norm_layer must be an instance of `str` or callable'
 
@@ -161,7 +169,7 @@ class StackingConv(Sequential):
     """
 
     def __init__(self, in_channels, out_channels, kernel_size, num_layers, stride=1, padding='half',
-                 dilation=1, bias=True, activation='relu', weights_init=None, bias_init=None,
+                 dilation=1, bias=True, padding_mode='zeros', activation='relu', weights_init=None, bias_init=None,
                  norm_method=None, groups=1, **kwargs):
         super().__init__()
         self.in_channels = in_channels
@@ -179,14 +187,16 @@ class StackingConv(Sequential):
         for num in range(num_layers - 1):
             layer = conv_layer(in_channels=shape, out_channels=out_channels, kernel_size=kernel_size,
                                weights_init=weights_init, bias_init=bias_init, stride=1, padding=padding,
-                               dilation=dilation, activation=activation, groups=groups, bias=bias, **kwargs)
+                               dilation=dilation, activation=activation, groups=groups, bias=bias,
+                               padding_mode=padding_mode, **kwargs)
             self.add_module(f'conv_{num + 1}', layer)
             shape = out_channels
 
         self.add_module(f'conv_{num_layers}',
                         conv_layer(input_shape=shape, out_channels=out_channels, bias=bias, groups=groups,
                                    kernel_size=kernel_size, weights_init=weights_init, stride=stride, padding=padding,
-                                   dilation=dilation, activation=activation, bias_init=bias_init, **kwargs))
+                                   dilation=dilation, activation=activation, bias_init=bias_init,
+                                   padding_mode=padding_mode, **kwargs))
 
     def extra_repr(self):
         s = ('{input_shape}, {out_channels}, kernel_size={kernel_size}'
@@ -267,8 +277,18 @@ class FCNormAct(Sequential):
                      flatten=flatten, keepdim=keepdim)
 
         if isinstance(norm_layer, str):
-            norm_layer = BatchNorm1d if norm_layer == 'bn' else InstanceNorm1d if norm_layer == 'in' \
-                else LayerNorm if norm_layer == 'ln' else FeatureNorm1d if norm_layer == 'fn' else norm_layer
+            if norm_layer == 'bn':
+                norm_layer = BatchNorm1d
+            elif norm_layer == 'in':
+                norm_layer == InstanceNorm1d
+            elif norm_layer == 'ln':
+                norm_layer = LayerNorm
+            elif norm_layer == 'gn':
+                norm_layer = GroupNorm
+            elif norm_layer == 'fn':
+                norm_layer = FeatureNorm1d
+            else:
+                raise NotImplementedError
         else:
             assert callable(norm_layer), 'norm_layer must be an instance of `str` or callable'
 
@@ -342,8 +362,8 @@ class ResNetBasicBlock2d(Module):
     expansion = 1
 
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding='half', dilation=1,
-                 activation='relu', base_width=64, downsample=None, groups=1, block=None, weights_init=None,
-                 norm_layer='bn', **kwargs):
+                 padding_mode='zeros', activation='relu', base_width=64, downsample=None, groups=1, block=None,
+                 weights_init=None, norm_layer='bn', **kwargs):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -351,6 +371,7 @@ class ResNetBasicBlock2d(Module):
         self.stride = stride
         self.padding = padding
         self.dilation = _pair(dilation)
+        self.padding_mode = padding_mode
         self.activation = utils.function(activation, **kwargs)
         self.base_width = base_width
         self.width = int(out_channels * (base_width / 64)) * groups
@@ -367,7 +388,8 @@ class ResNetBasicBlock2d(Module):
         else:
             if stride > 1 or in_channels != out_channels * self.expansion:
                 self.downsample = ConvNormAct(in_channels, out_channels * self.expansion, 1, stride=stride, bias=False,
-                                              padding=padding, weights_init=weights_init, activation='linear')
+                                              padding=padding, weights_init=weights_init, activation='linear',
+                                              padding_mode=padding_mode)
             else:
                 self.downsample = Eye()
 
@@ -379,19 +401,19 @@ class ResNetBasicBlock2d(Module):
             block.add_module('conv1x1',
                              ConvNormAct(in_channels, out_channels, 1, bias=False,
                                          padding=self.padding, weights_init=self.weights_init,
-                                         activation=self.activation))
+                                         activation=self.activation, padding_mode=self.padding_mode))
             in_channels = out_channels
 
         block.add_module('conv_norm_act_1',
                          ConvNormAct(in_channels, out_channels, self.kernel_size, bias=False,
                                      padding=self.padding, weights_init=self.weights_init, stride=self.stride,
                                      activation=self.activation, groups=self.groups, norm_layer=self.norm_layer,
-                                     **self.kwargs))
+                                     padding_mode=self.padding_mode, **self.kwargs))
         block.add_module('conv_norm_act_2',
                          ConvNormAct(out_channels, out_channels * self.expansion,
                                      1 if self.expansion != 1 else self.kernel_size, bias=False, padding=self.padding,
-                                     activation=None, weights_init=self.weights_init, norm_layer=self.norm_layer,
-                                     **self.kwargs))
+                                     padding_mode=self.padding_mode, activation=None, weights_init=self.weights_init,
+                                     norm_layer=self.norm_layer, **self.kwargs))
         return block
 
     def forward(self, input):
@@ -465,8 +487,9 @@ class ResNetBottleneckBlock2d(ResNetBasicBlock2d):
     expansion = 4
 
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding='half', dilation=1,
-                 activation='relu', base_width=64, downsample=None, groups=1, block=None, weights_init=None,
-                 norm_layer='bn', **kwargs):
+                 padding_mode='zeros', activation='relu', base_width=64, downsample=None, groups=1, block=None,
+                 weights_init=None, norm_layer='bn', **kwargs):
         super().__init__(in_channels, out_channels, kernel_size, stride=stride, padding=padding,
                          dilation=dilation, activation=activation, base_width=base_width, downsample=downsample,
-                         groups=groups, block=block, weights_init=weights_init, norm_layer=norm_layer, **kwargs)
+                         groups=groups, block=block, weights_init=weights_init, norm_layer=norm_layer,
+                         padding_mode=padding_mode, **kwargs)

@@ -192,7 +192,7 @@ class Reshape(Module):
         self.new_shape = shape
 
     def forward(self, input: T.Tensor):
-        return T.reshape(input, self.new_shape)
+        return input.view(*self.new_shape)
 
     def extra_repr(self):
         s = 'new_shape={new_shape}'.format(**self.__dict__)
