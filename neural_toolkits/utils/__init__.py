@@ -11,6 +11,7 @@ from .activation_utils import *
 from .cv_utils import *
 from .misc_utils import *
 from .data_utils import *
+from .model_utils import *
 
 import torch
 
