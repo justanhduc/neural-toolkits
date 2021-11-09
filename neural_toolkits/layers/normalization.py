@@ -7,11 +7,11 @@ from ..utils.types import Optional, Union, Callable
 __all__ = ['BatchNorm1d', 'BatchNorm2d', 'LayerNorm', 'InstanceNorm2d', 'FeatureNorm1d', 'InstanceNorm1d', 'GroupNorm']
 
 
-def _batch_norm_wrapper(cls):
+def _norm_wrapper(cls):
 
     class Wrapper(cls, _LayerMethod):
         """
-        Performs batch normalization on input signals.
+        Performs normalization on input signals.
 
         Parameters
         ----------
@@ -74,9 +74,12 @@ def _batch_norm_wrapper(cls):
     return Wrapper
 
 
-BatchNorm1d = _batch_norm_wrapper(nn.BatchNorm1d)
-BatchNorm2d = _batch_norm_wrapper(nn.BatchNorm2d)
-BatchNorm3d = _batch_norm_wrapper(nn.BatchNorm3d)
+BatchNorm1d = _norm_wrapper(nn.BatchNorm1d)
+BatchNorm2d = _norm_wrapper(nn.BatchNorm2d)
+BatchNorm3d = _norm_wrapper(nn.BatchNorm3d)
+InstanceNorm1d = _norm_wrapper(nn.InstanceNorm1d)
+InstanceNorm2d = _norm_wrapper(nn.InstanceNorm2d)
+InstanceNorm3d = _norm_wrapper(nn.InstanceNorm3d)
 
 
 class LayerNorm(nn.LayerNorm, _LayerMethod):
@@ -116,59 +119,6 @@ class LayerNorm(nn.LayerNorm, _LayerMethod):
     def forward(self, input):
         output = super().forward(input)
         return self.activation(output)
-
-
-def _instance_norm_wrapper(cls):
-
-    class Wrapper(cls, _LayerMethod):
-        """
-        Performs instance normalization on input signals.
-
-        Parameters
-        ----------
-        num_features
-            size of input features.
-        eps
-            a value added to the denominator for numerical stability.
-            Default: 1e-5.
-        momentum
-            the value used for the running_mean and running_var
-            computation. Can be set to ``None`` for cumulative moving average
-            (i.e. simple average). Default: 0.1.
-        affine
-            a boolean value that when set to ``True``, this module has
-            learnable affine parameters. Default: ``True``.
-        track_running_stats
-            a boolean value that when set to ``True``, this
-            module tracks the running mean and variance, and when set to ``False``,
-            this module does not track such statistics and always uses batch
-            statistics in both training and eval modes. Default: ``True``.
-        activation
-            non-linear function to activate the linear result.
-            It accepts any callable function
-            as well as a recognizable ``str``.
-            A list of possible ``str`` is in :const:`~neuralnet_pytorch.utils.function`.
-        kwargs
-            extra keyword arguments to pass to activation.
-        """
-
-        def __init__(self, num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=False,
-                     activation=None,
-                     **kwargs):
-            self.activation = utils.function(activation, **kwargs)
-            super().__init__(num_features, eps, momentum, affine, track_running_stats)
-
-        def forward(self, input):
-            output = super().forward(input)
-            return self.activation(output)
-
-    Wrapper.__name__ = cls.__name__
-    return Wrapper
-
-
-InstanceNorm1d = _instance_norm_wrapper(nn.InstanceNorm1d)
-InstanceNorm2d = _instance_norm_wrapper(nn.InstanceNorm2d)
-InstanceNorm3d = _instance_norm_wrapper(nn.InstanceNorm3d)
 
 
 class GroupNorm(nn.GroupNorm, _LayerMethod):
