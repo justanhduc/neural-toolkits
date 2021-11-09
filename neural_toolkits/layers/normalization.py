@@ -53,10 +53,10 @@ def _norm_wrapper(cls):
                      no_scale: bool = False,
                      **kwargs):
             self.input_shape = num_features
-            self.activation = utils.function(activation, **kwargs)
             self.no_scale = no_scale
 
             super().__init__(num_features, eps, momentum, affine, track_running_stats)
+            self.activation = utils.function(activation, **kwargs)
             if self.no_scale:
                 nn.init.constant_(self.weight, 1.)
                 self.weight.requires_grad_(False)
@@ -113,8 +113,8 @@ class LayerNorm(nn.LayerNorm, _LayerMethod):
     """
 
     def __init__(self, normalized_shape, eps=1e-5, elementwise_affine=True, activation=None, **kwargs):
-        self.activation = utils.function(activation, **kwargs)
         super().__init__(normalized_shape, eps, elementwise_affine)
+        self.activation = utils.function(activation, **kwargs)
 
     def forward(self, input):
         output = super().forward(input)
@@ -163,8 +163,8 @@ class GroupNorm(nn.GroupNorm, _LayerMethod):
 
     def __init__(self, num_groups: int, num_channels: int, eps: float = 1e-5, affine: bool = True,
                  activation: Optional[Union[str, Callable]] = None, **kwargs):
-        self.activation = utils.function(activation, **kwargs)
         super().__init__(num_groups, num_channels, eps, affine)
+        self.activation = utils.function(activation, **kwargs)
 
     def forward(self, input):
         output = super().forward(input)
@@ -208,10 +208,10 @@ class FeatureNorm1d(nn.BatchNorm1d, _LayerMethod):
 
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True, track_running_stats=True, activation=None,
                  no_scale=False, **kwargs):
-        self.activation = utils.function(activation, **kwargs)
         self.no_scale = no_scale
 
         super().__init__(num_features, eps, momentum, affine, track_running_stats)
+        self.activation = utils.function(activation, **kwargs)
         if self.no_scale:
             nn.init.constant_(self.weight, 1.)
             self.weight.requires_grad_(False)

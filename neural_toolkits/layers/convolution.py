@@ -64,7 +64,6 @@ class Conv2d(nn.Conv2d, _LayerMethod):
                  bias_init: Callable = None,
                  **kwargs):
         kernel_size = _pair(kernel_size)
-        self.activation = utils.function(activation, **kwargs)
         self.weights_init = weights_init
         self.bias_init = bias_init
         dilation = _pair(dilation)
@@ -86,6 +85,7 @@ class Conv2d(nn.Conv2d, _LayerMethod):
 
         super().__init__(in_channels, out_channels, kernel_size, stride, tuple(padding), dilation, bias=bias,
                          groups=groups, padding_mode=padding_mode)
+        self.activation = utils.function(activation, **kwargs)
 
     def forward(self, input, *args, **kwargs):
         input = self.activation(super().forward(input))
@@ -165,7 +165,6 @@ class ConvTranspose2d(nn.ConvTranspose2d, _LayerMethod):
                  **kwargs):
         self.weights_init = weights_init
         self.bias_init = bias_init
-        self.activation = utils.function(activation, **kwargs)
 
         kernel_size = _pair(kernel_size)
         if isinstance(padding, str):
@@ -182,6 +181,7 @@ class ConvTranspose2d(nn.ConvTranspose2d, _LayerMethod):
 
         super().__init__(in_channels, out_channels, kernel_size, stride, padding, output_padding, groups, bias,
                          dilation, padding_mode)
+        self.activation = utils.function(activation, **kwargs)
 
     def forward(self, input: T.Tensor, output_size=None):
         output = self.activation(
@@ -248,8 +248,8 @@ class FC(nn.Linear, _LayerMethod):
         self.bias_init = bias_init
         self.flatten = flatten
         self.keepdim = keepdim
-        self.activation = utils.function(activation, **kwargs)
         super().__init__(in_features, out_features, bias)
+        self.activation = utils.function(activation, **kwargs)
 
     def forward(self, input, *args, **kwargs):
         if self.flatten:

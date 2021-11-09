@@ -1,19 +1,10 @@
 import torch as T
 import torch.nn.functional as F
 from functools import partial, update_wrapper
-
-__all__ = ['relu', 'linear', 'lrelu', 'tanh', 'sigmoid', 'elu', 'selu', 'softmax', 'function']
-
-
-def relu(x: T.Tensor, **kwargs):
-    """
-    ReLU activation.
-    """
-
-    return T.relu(x)
+import inspect
 
 
-def linear(x: T.Tensor, **kwargs):
+def linear(x: T.Tensor):
     """
     Linear activation.
     """
@@ -21,64 +12,30 @@ def linear(x: T.Tensor, **kwargs):
     return x
 
 
-def lrelu(x: T.Tensor, **kwargs):
-    """
-    Leaky ReLU activation.
-    """
+class Swish(T.nn.Module):
+    def __init__(self, inplace=True):
+        super(Swish, self).__init__()
+        self.inplace = inplace
+        self.beta = T.nn.Parameter(T.ones(1), requires_grad=True)
 
-    return F.leaky_relu(x, kwargs.get('negative_slope', .2), kwargs.get('inplace', False))
-
-
-def tanh(x: T.Tensor, **kwargs):
-    """
-    Hyperbolic tangent activation.
-    """
-
-    return T.tanh(x)
-
-
-def sigmoid(x: T.Tensor, **kwargs):
-    """
-    Sigmoid activation.
-    """
-
-    return T.sigmoid(x)
-
-
-def elu(x: T.Tensor, **kwargs):
-    """
-    ELU activation.
-    """
-
-    return F.elu(x, kwargs.get('alpha', 1.), kwargs.get('inplace', False))
-
-
-def softmax(x: T.Tensor, **kwargs):
-    """
-    Softmax activation.
-    """
-
-    return T.softmax(x, kwargs.get('dim', None))
-
-
-def selu(x: T.Tensor, **kwargs):
-    """
-    SELU activation.
-    """
-
-    return T.selu(x)
+    def forward(self, input):
+        return F.silu(self.beta * input, inplace=self.inplace) / (self.beta + 1e-8)
 
 
 act = {
-    'relu': relu,
+    'relu': F.relu,
     'linear': linear,
     None: linear,
-    'lrelu': lrelu,
-    'tanh': tanh,
-    'sigmoid': sigmoid,
-    'elu': elu,
-    'softmax': softmax,
-    'selu': selu
+    'lrelu': F.leaky_relu,
+    'tanh': F.tanh,
+    'sigmoid': F.sigmoid,
+    'elu': F.elu,
+    'softmax': F.softmax,
+    'selu': F.selu,
+    'silu': F.silu,
+    'glu': F.glu,
+    'prelu': T.nn.PReLU,
+    'swish': Swish
 }
 
 
@@ -95,6 +52,23 @@ def function(activation, **kwargs):
     :return:
         activation function
     """
+    if isinstance(activation, str) or activation is None:
+        activation = act[activation]
 
-    func = partial(activation, **kwargs) if callable(activation) else partial(act[activation], **kwargs)
-    return update_wrapper(func, activation) if callable(activation) else update_wrapper(func, act[activation])
+    try:
+        arguments = inspect.BoundArguments(inspect.signature(activation), kwargs)
+        if inspect.isclass(activation) and issubclass(activation, T.nn.Module):
+            func = activation(**arguments.kwargs)
+            setattr(func, '__name__', activation.__name__)
+        else:
+            func = partial(activation, **arguments.kwargs)
+            update_wrapper(func, activation)
+            if isinstance(activation, T.nn.Module):
+                setattr(func, '__name__', activation._get_name())
+    except ValueError:
+        func = partial(activation, **kwargs)
+        update_wrapper(func, activation)
+        if isinstance(activation, T.nn.Module):
+            setattr(func, '__name__', activation._get_name())
+
+    return func
