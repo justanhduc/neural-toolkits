@@ -218,7 +218,6 @@ class Trainer(ABC):
                     self.lr_scheduler.step()
 
             if self.val_freq is not None:
-                kwargs.pop('batch')
                 if mon.iter % self.val_freq == 0:
                     self.eval_step(**kwargs)
 
