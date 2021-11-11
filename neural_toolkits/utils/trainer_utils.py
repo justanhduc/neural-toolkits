@@ -181,10 +181,12 @@ class Trainer(ABC):
         self.states = {
             'model_dict': [net.state_dict() for net in self._net],
             'optim_dict': [opt.state_dict() for opt in self.optimizer],
-            'amp': amp.state_dict(),
             'epoch': self.mon.epoch,
             'iteration': self.mon.iter
         }
+        if self.fp16:
+            self.states['amp'] = amp.state_dict()
+
         mon.dump('checkpoint.pt', self.states, method='torch', keep=self.kwargs.get('keep', 10))
         if self.ema is not None:
             if isinstace(self.ema, (list, tuple)):
