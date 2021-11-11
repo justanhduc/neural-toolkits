@@ -2,14 +2,14 @@ import torch as T
 
 from . import root_logger
 
-__all__ = ['time_cuda_module']
+__all__ = ['time_cuda_module', 'profiled_function']
 
 
-def time_cuda_module(f, *args, **kwargs):
+def time_cuda_module(fn, *args, **kwargs):
     """
     Measures the time taken by a Pytorch module.
 
-    :param f:
+    :param fn:
         a Pytorch module.
     :param args:
         arguments to be passed to `f`.
@@ -23,7 +23,7 @@ def time_cuda_module(f, *args, **kwargs):
     end = T.cuda.Event(enable_timing=True)
 
     start.record()
-    f(*args, **kwargs)
+    fn(*args, **kwargs)
     end.record()
 
     # Waits for everything to finish running
@@ -32,3 +32,17 @@ def time_cuda_module(f, *args, **kwargs):
     total = start.elapsed_time(end)
     root_logger.info('Took %fms' % total)
     return total
+
+
+def profiled_function(fn):
+    """
+    Copy from NVIDIA
+
+    :param fn:
+    :return:
+    """
+    def decorator(*args, **kwargs):
+        with T.autograd.profiler.record_function(fn.__name__):
+            return fn(*args, **kwargs)
+    decorator.__name__ = fn.__name__
+    return decorator
