@@ -48,7 +48,7 @@ class Trainer(ABC):
         self.val_freq = val_freq
         self.device = device
         self.kwargs = kwargs
-        self.process_index = None
+        self.process_index = 0
         self.distributed = distributed
         self.fp16 = fp16
         self.sampler = sampler
@@ -206,7 +206,7 @@ class Trainer(ABC):
             batch = ntk.utils.batch_to_device(batch)
             arguments = inspect.BoundArguments(inspect.signature(self.learn), kwargs)
             self.learn(batch=batch, **arguments.kwargs)
-            if self.ema is not None:
+            if self.ema is not None and self.process_index == 0:
                 if isinstance(self.ema, (list, tuple)):
                     for ema in self.ema:
                         ema.update()
