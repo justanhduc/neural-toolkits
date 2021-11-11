@@ -34,6 +34,7 @@ class Trainer(ABC):
                  val_freq: int = None,
                  num_workers: int = 8,
                  device: Union[int, str, List[int]] = 'cpu',
+                 distributed: bool = False,
                  fp16: bool = False,
                  sample_inputs: Any = None,
                  **kwargs):
@@ -48,7 +49,7 @@ class Trainer(ABC):
         self.device = device
         self.kwargs = kwargs
         self.process_index = None
-        self.distributed = True if isinstance(self.device, (list, tuple)) else False
+        self.distributed = distributed
         self.fp16 = fp16
         self.sampler = sampler
         self.lr_scheduler = lr_scheduler
