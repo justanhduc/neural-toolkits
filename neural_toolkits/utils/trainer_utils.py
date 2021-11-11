@@ -33,7 +33,7 @@ class Trainer(ABC):
                  num_epochs: int = None,
                  val_freq: int = None,
                  num_workers: int = 8,
-                 device: Union[int, str, List[int]] = 'cpu',
+                 device: Union[int, str] = 'cpu',
                  distributed: bool = False,
                  fp16: bool = False,
                  sample_inputs: Any = None,
@@ -59,6 +59,14 @@ class Trainer(ABC):
         self.ema = ema
         self.ema_decay = ema_decay
 
+        if isinstance(self._net, T.nn.Module):
+            self._net.to(self.device)
+        elif isinstance(self._net, (list, tuple)):
+            for net_ in self._net:
+                net_.to(self.device)
+        else:
+            raise NotImplementedError
+
         if self.distributed:
             self._initialize_distributed_mode()
             if isinstance(net, T.nn.Module):
@@ -77,14 +85,6 @@ class Trainer(ABC):
             self.net = self._net_ddp
         else:
             self.net = self._net
-
-        if isinstance(self.net, T.nn.Module):
-            self.net.to(self.device)
-        elif isinstance(self.net, (list, tuple)):
-            for net_ in self.net:
-                net_.to(self.device)
-        else:
-            raise NotImplementedError
 
         if fp16:
             assert self.device != 'cpu', 'Cannot use fp16 training on CPU!'
