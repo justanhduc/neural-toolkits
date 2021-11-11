@@ -189,7 +189,7 @@ class Trainer(ABC):
 
         mon.dump('checkpoint.pt', self.states, method='torch', keep=self.kwargs.get('keep', 10))
         if self.ema is not None:
-            if isinstace(self.ema, (list, tuple)):
+            if isinstance(self.ema, (list, tuple)):
                 for ema in self.ema:
                     mon.dump('ema.pt', ema.state_dict(), method='torch', keep=self.kwargs.get('keep', 10))
             else:
