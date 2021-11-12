@@ -3,6 +3,7 @@ import torch as T
 import threading
 from queue import Queue
 from scipy.stats import truncnorm
+from collections.abc import Iterable
 
 from . import root_logger
 
@@ -542,12 +543,10 @@ def batch_to_device(batch, *args, **kwargs):
 
     if isinstance(batch, T.Tensor) or hasattr(batch, 'to'):
         batch_device = batch.to(*args, **kwargs)
+    elif isinstance(batch, Iterable):
+        batch_device = [batch_to_device(b, *args, **kwargs) for b in batch]
     else:
-        try:
-            batch_device = [batch_to_device(b, *args, **kwargs) for b in batch]
-        except TypeError:
-            root_logger.error('batch must be a Tensor or iterable', exc_info=True)
-            raise
+        batch_device = batch
 
     return batch_device
 

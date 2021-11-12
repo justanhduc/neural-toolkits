@@ -1,4 +1,4 @@
-from torch._six import container_abcs
+from collections.abc import Iterable
 import torch.nn as nn
 
 from . import root_logger
@@ -44,7 +44,7 @@ def get_non_none(array):
     :return:
         the first item that is not ``None``.
     """
-    assert isinstance(array, container_abcs.Iterable)
+    assert isinstance(array, Iterable)
 
     try:
         e = next(item for item in array if item is not None)
