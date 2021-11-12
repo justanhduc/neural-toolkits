@@ -11,7 +11,7 @@ from abc import ABC
 import abc
 from typing import List, Union, Any
 
-__all__ = ['Trainer']
+__all__ = ['Trainer', 'Evaluator']
 
 
 class Trainer(ABC):
@@ -197,8 +197,8 @@ class Trainer(ABC):
         mon.dump('checkpoint.pt', self.states, method='torch', keep=self.kwargs.get('keep', 10))
         if self.ema is not None:
             if isinstance(self.ema, (list, tuple)):
-                for ema in self.ema:
-                    mon.dump('ema.pt', ema.state_dict(), method='torch', keep=self.kwargs.get('keep', 10))
+                state_dict = [ema.state_dict() for ema in self.ema]
+                mon.dump('ema.pt', state_dict, method='torch', keep=self.kwargs.get('keep', 10))
             else:
                 mon.dump('ema.pt', self.ema.state_dict(), method='torch', keep=self.kwargs.get('keep', 10))
 
@@ -254,4 +254,168 @@ class Trainer(ABC):
             if self.val_freq is None:
                 self.eval_step(**kwargs)
 
-        dist.destroy_process_group()
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+class Evaluator(ABC):
+    def __init__(self,
+                 checkpoint: str,
+                 nets: Union[T.nn.Module, List[T.nn.Module]],
+                 batch_size: int,
+                 val_set: T.utils.data.Dataset = None,
+                 prefetcher: bool = False,
+                 ema: bool = False,
+                 num_workers: int = 8,
+                 device: Union[int, str] = 'cpu',
+                 distributed: bool = False,
+                 fp16: bool = False,
+                 version: int = -1,
+                 **kwargs):
+        self._nets = nets
+        self.prefetcher = prefetcher
+        self.val_set = val_set
+        self.batch_size = batch_size
+        self.device = device
+        self.kwargs = kwargs
+        self.process_index = 0
+        self.distributed = distributed
+        self.fp16 = fp16
+        self.nets = None
+        self._nets_ddp = nets
+        self.ema = ema
+        self.version = version
+
+        if isinstance(self._nets, T.nn.Module):
+            self._nets.to(self.device)
+        elif isinstance(self._nets, (list, tuple)):
+            for net_ in self._nets:
+                net_.to(self.device)
+        else:
+            raise NotImplementedError
+
+        if self.distributed:
+            self._initialize_distributed_mode()
+            if isinstance(nets, T.nn.Module):
+                self._nets = T.nn.SyncBatchNorm.convert_sync_batchnorm(nets)
+            elif isinstance(nets, (list, tuple)):
+                self._nets = [T.nn.SyncBatchNorm.convert_sync_batchnorm(net_) for net_ in nets]
+            else:
+                raise NotImplementedError
+
+            if isinstance(nets, T.nn.Module):
+                self._nets_ddp = DDP(nets, device_ids=[device], output_device=device)
+            elif isinstance(nets, (list, tuple)):
+                self._nets_ddp = [DDP(net_, device_ids=[device], output_device=device) for net_ in nets]
+            else:
+                raise NotImplementedError
+            self.nets = self._nets_ddp
+        else:
+            self.nets = self._nets
+
+        if fp16:
+            try:
+                from apex import amp
+            except ModuleNotFoundError:
+                print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
+                raise
+
+            assert self.device != 'cpu', 'Cannot use fp16 training on CPU!'
+            amp_opt_level = 'O1'
+            self.nets, self.optimizers = amp.initialize(self.nets, self.optimizers, opt_level=amp_opt_level)
+
+        self.val_loader = None
+        if val_set is not None:
+            self.val_loader = DataLoader(
+                self.val_set,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                pin_memory=True
+            )
+            if self.prefetcher:
+                if self.device == 'cpu':
+                    raise ValueError('Cannot use prefetcher on CPU')
+
+                self.val_loader = ntk.utils.DataPrefetcher(self.val_loader, device=self.device)
+
+        self.mon = mon
+        self.logger = logger
+        args = inspect.BoundArguments(inspect.signature(self.mon.initialize), kwargs)
+        self.mon.initialize(current_folder=checkpoint, **args.kwargs)
+        self.mon.iter = 0
+        if self.ema:
+            if isinstance(nets, T.nn.Module):
+                self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=.999)  # dummy decay
+            elif isinstance(nets, (list, tuple)):
+                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=.999)  # dummy decay
+                            for net_ in self.nets]
+            else:
+                raise NotImplementedError
+
+            ema_sd = mon.load('ema.pt', method='torch', version=version)
+            if isinstance(self.ema, (list, tuple)):
+                for ema in self.ema:
+                    ema.load_state_dict(ema_sd)
+                    ema.copy_to()
+            else:
+                self.ema.load_state_dict(ema_sd)
+                self.ema.copy_to()
+        else:
+            self.ema = None
+            pretrained = mon.load('checkpoint.pt', method='torch', version=version)['model_dict']
+            if isinstance(self._nets, T.nn.Module):
+                if isinstance(pretrained, dict):
+                    self._nets.load_state_dict(pretrained)
+                elif isinstance(pretrained, (list, tuple)):
+                    self._nets.load_state_dict(pretrained[0])
+                else:
+                    raise NotImplementedError
+            elif isinstance(self._nets, (list, tuple)):
+                if isinstance(pretrained, dict):
+                    logger.info(f'There are {len(self._nets)} models but found only one set of parameters')
+                    self._nets[0].load_state_dict(pretrained)
+                elif isinstance(pretrained, (list, tuple)):
+                    if len(pretrained) != len(self._nets):
+                        logger.info(f'Mismatching number of models and sets of parameters. '
+                                    f'There are {len(self._nets)} models but {len(pretrained)} sets.')
+
+                    for model, params in zip(self._nets, pretrained):
+                        model.load_state_dict(params)
+                else:
+                    raise NotImplementedError
+
+        for k, v in kwargs.items():
+            if not hasattr(self, k):
+                if isinstance(v, (T.Tensor, T.nn.Module)):
+                    v = v.to(self.device)
+                setattr(self, k, v)
+
+        if isinstance(self.nets, T.nn.Module):
+            self.nets.eval()
+        elif isinstance(self.nets, (list, tuple)):
+            for net_ in self.nets:
+                net_.eval()
+        else:
+            raise NotImplementedError
+
+    def _initialize_distributed_mode(self):
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '9999'
+        if not dist.is_initialized():
+            dist.init_process_group(backend='nccl')
+        self.process_index = dist.get_rank()
+        self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
+        self.device = T.device("cuda", self.local_process_index)
+        T.cuda.set_device(self.device)
+
+    @abc.abstractmethod
+    def evaluate(self, **kwargs):
+        raise NotImplementedError
+
+    def run_evaluation(self, **kwargs):
+        with T.no_grad():
+            self.evaluate(**kwargs)
+
+        if dist.is_initialized():
+            dist.destroy_process_group()
