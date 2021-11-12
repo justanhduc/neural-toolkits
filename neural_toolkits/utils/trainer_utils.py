@@ -3,7 +3,6 @@ from torch.utils.data import DataLoader
 import neural_toolkits as ntk
 from neural_monitor import monitor as mon
 from neural_monitor import logger
-from apex import amp
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import os
@@ -18,14 +17,14 @@ __all__ = ['Trainer']
 class Trainer(ABC):
     def __init__(self,
                  model_name: str,
-                 output_root: str,
-                 net: Union[T.nn.Module, List[T.nn.Module]],
-                 optimizer: Union[T.optim.Optimizer, List[T.optim.Optimizer]],
+                 nets: Union[T.nn.Module, List[T.nn.Module]],
+                 optimizers: Union[T.optim.Optimizer, List[T.optim.Optimizer]],
                  batch_size: int,
                  train_set: T.utils.data.Dataset,
                  sampler: T.utils.data.Sampler = None,
                  prefetcher: bool = False,
                  val_set: T.utils.data.Dataset = None,
+                 val_batch_size: int = None,
                  lr_scheduler: T.optim.lr_scheduler._LRScheduler = None,
                  scheduler_iter: bool = False,
                  ema: bool = False,
@@ -37,14 +36,16 @@ class Trainer(ABC):
                  distributed: bool = False,
                  fp16: bool = False,
                  sample_inputs: Any = None,
+                 output_root: str = None,
                  **kwargs):
-        self._net = net
-        self.optimizer = optimizer
+        self._nets = nets
+        self.optimizers = optimizers
         self.train_set = train_set
         self.prefetcher = prefetcher
         self.val_set = val_set
         self.num_epochs = num_epochs
         self.batch_size = batch_size
+        self.val_batch_size = val_batch_size
         self.val_freq = val_freq
         self.device = device
         self.kwargs = kwargs
@@ -54,55 +55,55 @@ class Trainer(ABC):
         self.sampler = sampler
         self.lr_scheduler = lr_scheduler
         self.scheduler_iter = scheduler_iter
-        self.net = None
-        self._net_ddp = net
+        self.nets = None
+        self._nets_ddp = nets
         self.ema = ema
         self.ema_decay = ema_decay
 
-        if isinstance(self._net, T.nn.Module):
-            self._net.to(self.device)
-        elif isinstance(self._net, (list, tuple)):
-            for net_ in self._net:
+        if isinstance(self._nets, T.nn.Module):
+            self._nets.to(self.device)
+        elif isinstance(self._nets, (list, tuple)):
+            for net_ in self._nets:
                 net_.to(self.device)
         else:
             raise NotImplementedError
 
         if self.distributed:
             self._initialize_distributed_mode()
-            if isinstance(net, T.nn.Module):
-                self._net = T.nn.SyncBatchNorm.convert_sync_batchnorm(net)
-            elif isinstance(net, (list, tuple)):
-                self._net = [T.nn.SyncBatchNorm.convert_sync_batchnorm(net_) for net_ in net]
+            if isinstance(nets, T.nn.Module):
+                self._nets = T.nn.SyncBatchNorm.convert_sync_batchnorm(nets)
+            elif isinstance(nets, (list, tuple)):
+                self._nets = [T.nn.SyncBatchNorm.convert_sync_batchnorm(net_) for net_ in nets]
             else:
                 raise NotImplementedError
 
-            if isinstance(net, T.nn.Module):
-                self._net_ddp = DDP(net, device_ids=[device], output_device=device)
-            elif isinstance(net, (list, tuple)):
-                self._net_ddp = [DDP(net_, device_ids=[device], output_device=device) for net_ in net]
+            if isinstance(nets, T.nn.Module):
+                self._nets_ddp = DDP(nets, device_ids=[device], output_device=device)
+            elif isinstance(nets, (list, tuple)):
+                self._nets_ddp = [DDP(net_, device_ids=[device], output_device=device) for net_ in nets]
             else:
                 raise NotImplementedError
-            self.net = self._net_ddp
+            self.nets = self._nets_ddp
         else:
-            self.net = self._net
+            self.nets = self._nets
 
         if fp16:
+            try:
+                from apex import amp
+            except ModuleNotFoundError:
+                print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
+                raise
+
             assert self.device != 'cpu', 'Cannot use fp16 training on CPU!'
             amp_opt_level = 'O1'
-            if isinstance(self.net, T.nn.Module):
-                self.net, self.optimizer = amp.initialize(self.net, self.optimizer, opt_level=amp_opt_level)
-            elif isinstance(net, (list, tuple)):
-                self.net, self.optimizer = list(zip(*[amp.initialize(net_, opt, opt_level=amp_opt_level)
-                                                      for net_, opt in zip(self.net, self.optimizer)]))
-            else:
-                raise NotImplementedError
+            self.nets, self.optimizers = amp.initialize(self.nets, self.optimizers, opt_level=amp_opt_level)
 
         if self.ema:
-            if isinstance(net, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self.net.parameters(), decay=self.ema_decay, use_num_updates=False)
-            elif isinstance(net, (list, tuple)):
+            if isinstance(nets, T.nn.Module):
+                self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=self.ema_decay, use_num_updates=False)
+            elif isinstance(nets, (list, tuple)):
                 self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=self.ema_decay, use_num_updates=False)
-                            for net_ in self.net]
+                            for net_ in self.nets]
             else:
                 raise NotImplementedError
         else:
@@ -129,11 +130,16 @@ class Trainer(ABC):
         if val_set is not None:
             self.val_loader = DataLoader(
                 self.val_set,
-                batch_size=batch_size,
+                batch_size=batch_size if val_batch_size is None else val_batch_size,
                 shuffle=False,
                 num_workers=num_workers,
                 pin_memory=True
             )
+            if self.prefetcher:
+                if self.device == 'cpu':
+                    raise ValueError('Cannot use prefetcher on CPU')
+
+                self.val_loader = ntk.utils.DataPrefetcher(self.val_loader, device=self.device)
 
         self.mon = mon
         self.logger = logger
@@ -144,10 +150,11 @@ class Trainer(ABC):
         if backup is not None:
             self.mon.backup(backup, **args.kwargs)
         if sample_inputs is not None:
-            if isinstance(self._net, T.nn.Module):
-                self.mon.print_module_summary(self._net, sample_inputs)
-            elif isinstance(self._net, (list, tuple)):
-                for net_, sample_inputs_ in zip(self._net, sample_inputs):
+            sample_inputs = ntk.utils.batch_to_device(sample_inputs, self.device)
+            if isinstance(self._nets, T.nn.Module):
+                self.mon.print_module_summary(self._nets, sample_inputs)
+            elif isinstance(self._nets, (list, tuple)):
+                for net_, sample_inputs_ in zip(self._nets, sample_inputs):
                     self.mon.print_module_summary(net_, sample_inputs_)
 
         for k, v in kwargs.items():
@@ -179,8 +186,8 @@ class Trainer(ABC):
 
     def _dump_states(self):
         self.states = {
-            'model_dict': [net.state_dict() for net in self._net],
-            'optim_dict': [opt.state_dict() for opt in self.optimizer],
+            'model_dict': [net.state_dict() for net in self._nets],
+            'optim_dict': [opt.state_dict() for opt in self.optimizers],
             'epoch': self.mon.epoch,
             'iteration': self.mon.iter
         }
@@ -197,10 +204,10 @@ class Trainer(ABC):
 
     def train_step(self, **kwargs):
         for batch in mon.iter_batch(self.train_loader):
-            if isinstance(self._net, T.nn.Module):
-                self._net.train(True)
-            elif isinstance(self._net, (list, tuple)):
-                for net in self._net:
+            if isinstance(self._nets, T.nn.Module):
+                self._nets.train(True)
+            elif isinstance(self._nets, (list, tuple)):
+                for net in self._nets:
                     net.train(True)
             else:
                 raise NotImplementedError
@@ -230,10 +237,10 @@ class Trainer(ABC):
         self._dump_states()
 
     def eval_step(self, **kwargs):
-        if isinstance(self._net, T.nn.Module):
-            self._net.eval()
-        elif isinstance(self._net, (list, tuple)):
-            for net in self._net:
+        if isinstance(self._nets, T.nn.Module):
+            self.nets.eval()
+        elif isinstance(self._nets, (list, tuple)):
+            for net in self.nets:
                 net.eval()
         else:
             raise NotImplementedError
@@ -246,3 +253,5 @@ class Trainer(ABC):
             self.train_step(**kwargs)
             if self.val_freq is None:
                 self.eval_step(**kwargs)
+
+        dist.destroy_process_group()
