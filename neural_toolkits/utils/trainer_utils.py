@@ -47,10 +47,10 @@ class Trainer(ABC):
         self.batch_size = batch_size
         self.val_batch_size = val_batch_size
         self.val_freq = val_freq
-        self.device = device
         self.kwargs = kwargs
         self.process_index = 0
         self.distributed = distributed
+        self.device = 'cpu' if self.distributed else device
         self.fp16 = fp16
         self.sampler = sampler
         self.lr_scheduler = lr_scheduler
@@ -59,14 +59,6 @@ class Trainer(ABC):
         self._nets_ddp = nets
         self.ema = ema
         self.ema_decay = ema_decay
-
-        if isinstance(self._nets, T.nn.Module):
-            self._nets.to(self.device)
-        elif isinstance(self._nets, (list, tuple)):
-            for net_ in self._nets:
-                net_.to(self.device)
-        else:
-            raise NotImplementedError
 
         if self.distributed:
             self._initialize_distributed_mode()
@@ -77,15 +69,30 @@ class Trainer(ABC):
             else:
                 raise NotImplementedError
 
+            if isinstance(self._nets, T.nn.Module):
+                self._nets.to(self.device)
+            elif isinstance(self._nets, (list, tuple)):
+                for net_ in self._nets:
+                    net_.to(self.device)
+            else:
+                raise NotImplementedError
+
             if isinstance(nets, T.nn.Module):
-                self._nets_ddp = DDP(nets, device_ids=[device], output_device=device)
+                self._nets_ddp = DDP(nets, device_ids=[self.device], output_device=self.device)
             elif isinstance(nets, (list, tuple)):
-                self._nets_ddp = [DDP(net_, device_ids=[device], output_device=device) for net_ in nets]
+                self._nets_ddp = [DDP(net_, device_ids=[self.device], output_device=self.device) for net_ in nets]
             else:
                 raise NotImplementedError
             self.nets = self._nets_ddp
         else:
             self.nets = self._nets
+            if isinstance(self._nets, T.nn.Module):
+                self._nets.to(self.device)
+            elif isinstance(self._nets, (list, tuple)):
+                for net_ in self._nets:
+                    net_.to(self.device)
+            else:
+                raise NotImplementedError
 
         if fp16:
             try:
@@ -286,20 +293,20 @@ class Evaluator(ABC):
         self.ema = ema
         self.version = version
 
-        if isinstance(self._nets, T.nn.Module):
-            self._nets.to(self.device)
-        elif isinstance(self._nets, (list, tuple)):
-            for net_ in self._nets:
-                net_.to(self.device)
-        else:
-            raise NotImplementedError
-
         if self.distributed:
             self._initialize_distributed_mode()
             if isinstance(nets, T.nn.Module):
                 self._nets = T.nn.SyncBatchNorm.convert_sync_batchnorm(nets)
             elif isinstance(nets, (list, tuple)):
                 self._nets = [T.nn.SyncBatchNorm.convert_sync_batchnorm(net_) for net_ in nets]
+            else:
+                raise NotImplementedError
+
+            if isinstance(self._nets, T.nn.Module):
+                self._nets.to(self.device)
+            elif isinstance(self._nets, (list, tuple)):
+                for net_ in self._nets:
+                    net_.to(self.device)
             else:
                 raise NotImplementedError
 
@@ -344,6 +351,7 @@ class Evaluator(ABC):
         args = inspect.BoundArguments(inspect.signature(self.mon.initialize), kwargs)
         self.mon.initialize(current_folder=checkpoint, **args.kwargs)
         self.mon.iter = 0
+        self.mon.num_iters = None
         if self.ema:
             if isinstance(nets, T.nn.Module):
                 self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=.999)  # dummy decay
@@ -363,7 +371,8 @@ class Evaluator(ABC):
                 self.ema.copy_to()
         else:
             self.ema = None
-            pretrained = mon.load('checkpoint.pt', method='torch', version=version)['model_dict']
+            pretrained = mon.load('checkpoint.pt', method='torch',
+                                  version=version, map_location=self.device)['model_dict']
             if isinstance(self._nets, T.nn.Module):
                 if isinstance(pretrained, dict):
                     self._nets.load_state_dict(pretrained)
