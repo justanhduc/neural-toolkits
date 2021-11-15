@@ -209,7 +209,7 @@ class ModelEMA:
                 else p.to(device=device)
                 for p in self.collected_params
             ]
-        return
+        return self
 
     def state_dict(self) -> dict:
         r"""Returns the state of the ExponentialMovingAverage as a dict."""
