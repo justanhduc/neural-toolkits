@@ -53,7 +53,7 @@ def get_non_none(array):
     return e
 
 
-def spectral_norm(module, name='weight', n_power_iterations=1, eps=1e-12, dim=None):
+def spectral_norm(module, name='weight', n_power_iterations=1, eps=1e-12, dim=None, exclude=None):
     """
     Applies :func:`torch.nn.utils.spectral_norm` recursively to `module` and all of
     its submodules.
@@ -71,23 +71,26 @@ def spectral_norm(module, name='weight', n_power_iterations=1, eps=1e-12, dim=No
         dimension corresponding to number of outputs,
         the default is ``0``, except for modules that are instances of
         ConvTranspose{1,2,3}d, when it is ``1``.
+    :param exclude:
+        a list of classes of which instances will not be applied SN.
     :return:
         the original module with the spectral norm hook.
     """
+    excludes = [
+        nn.modules.batchnorm._NormBase,
+        nn.GroupNorm,
+        nn.LayerNorm
+    ]
+    if exclude is not None:
+        excludes = excludes + list(exclude)
 
-    if hasattr(module, 'weight'):
-        if dim is None:
-            from ..layers import ConvTranspose2d
-            dim = 1 if isinstance(module, (ConvTranspose2d, nn.ConvTranspose2d)) else 0
-
-        if not isinstance(module, (nn.modules.batchnorm._BatchNorm,
-                                   nn.GroupNorm,
-                                   nn.LayerNorm)):
+    if hasattr(module, name):
+        if not isinstance(module, tuple(excludes)):
             module = nn.utils.spectral_norm(module, name, n_power_iterations, eps, dim)
 
         return module
     else:
         for mod_name, mod in module.named_children():
-            mod = spectral_norm(mod, name, n_power_iterations, eps, dim)
+            mod = spectral_norm(mod, name, n_power_iterations, eps, dim, exclude=exclude)
             module.__setattr__(mod_name, mod)
         return module
