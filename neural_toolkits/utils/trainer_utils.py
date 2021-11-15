@@ -37,6 +37,9 @@ class Trainer(ABC):
                  fp16: bool = False,
                  sample_inputs: Any = None,
                  output_root: str = None,
+                 backup: Union[str, List[str]] = None,
+                 excludes: Union[str, List[str]] = None,
+                 includes: Union[str, List[str]] = None,
                  **kwargs):
         self._nets = nets
         self.optimizers = optimizers
@@ -106,10 +109,10 @@ class Trainer(ABC):
             self.nets, self.optimizers = amp.initialize(self.nets, self.optimizers, opt_level=amp_opt_level)
 
         if self.ema:
-            if isinstance(nets, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=self.ema_decay, use_num_updates=False)
-            elif isinstance(nets, (list, tuple)):
-                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=self.ema_decay, use_num_updates=False)
+            if isinstance(self.nets, T.nn.Module):
+                self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=self.ema_decay, use_num_updates=True)
+            elif isinstance(self.nets, (list, tuple)):
+                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=self.ema_decay, use_num_updates=True)
                             for net_ in self.nets]
             else:
                 raise NotImplementedError
@@ -152,10 +155,9 @@ class Trainer(ABC):
         self.logger = logger
         args = inspect.BoundArguments(inspect.signature(self.mon.initialize), kwargs)
         self.mon.initialize(model_name, output_root, **args.kwargs)
-        args = inspect.BoundArguments(inspect.signature(self.mon.backup), kwargs)
-        backup = kwargs.get('backup', None)
         if backup is not None:
-            self.mon.backup(backup, **args.kwargs)
+            self.mon.backup(backup, ignores=excludes, includes=includes)
+
         if sample_inputs is not None:
             sample_inputs = ntk.utils.batch_to_device(sample_inputs, self.device)
             if isinstance(self._nets, T.nn.Module):
@@ -184,9 +186,8 @@ class Trainer(ABC):
     def learn(self, batch, **kwargs):
         raise NotImplementedError
 
-    @abc.abstractmethod
     def evaluate(self, **kwargs):
-        raise NotImplementedError
+        pass
 
     def register_states(self, states: dict):
         self.states.update(states)
@@ -241,7 +242,8 @@ class Trainer(ABC):
             if not self.scheduler_iter:
                 self.lr_scheduler.step()
 
-        self._dump_states()
+        if self.process_index == 0:
+            self._dump_states()
 
     def eval_step(self, **kwargs):
         if isinstance(self._nets, T.nn.Module):
@@ -258,8 +260,6 @@ class Trainer(ABC):
     def run_training(self, **kwargs):
         for _ in mon.iter_epoch(range(self.num_epochs)):
             self.train_step(**kwargs)
-            if self.val_freq is None:
-                self.eval_step(**kwargs)
 
         if dist.is_initialized():
             dist.destroy_process_group()
@@ -319,6 +319,13 @@ class Evaluator(ABC):
             self.nets = self._nets_ddp
         else:
             self.nets = self._nets
+            if isinstance(self._nets, T.nn.Module):
+                self._nets.to(self.device)
+            elif isinstance(self._nets, (list, tuple)):
+                for net_ in self._nets:
+                    net_.to(self.device)
+            else:
+                raise NotImplementedError
 
         if fp16:
             try:
@@ -329,7 +336,7 @@ class Evaluator(ABC):
 
             assert self.device != 'cpu', 'Cannot use fp16 training on CPU!'
             amp_opt_level = 'O1'
-            self.nets, self.optimizers = amp.initialize(self.nets, self.optimizers, opt_level=amp_opt_level)
+            self.nets = amp.initialize(self.nets, opt_level=amp_opt_level)
 
         self.val_loader = None
         if val_set is not None:
@@ -352,47 +359,60 @@ class Evaluator(ABC):
         self.mon.initialize(current_folder=checkpoint, **args.kwargs)
         self.mon.iter = 0
         self.mon.num_iters = None
+
+        if isinstance(self.device, (str, T.device)):
+            map_location = self.device
+        elif isinstance(self.device, int):
+            map_location = T.device('cuda', self.device)
+        else:
+            raise NotImplementedError
+
+        pretrained = mon.load('checkpoint.pt', method='torch',
+                              version=version, map_location=map_location)['model_dict']
+        if isinstance(self._nets, T.nn.Module):
+            if isinstance(pretrained, dict):
+                self._nets.load_state_dict(pretrained)
+            elif isinstance(pretrained, (list, tuple)):
+                self._nets.load_state_dict(pretrained[0])
+            else:
+                raise NotImplementedError
+        elif isinstance(self._nets, (list, tuple)):
+            if isinstance(pretrained, dict):
+                logger.info(f'There are {len(self._nets)} models but found only one set of parameters')
+                self._nets[0].load_state_dict(pretrained)
+            elif isinstance(pretrained, (list, tuple)):
+                if len(pretrained) != len(self._nets):
+                    logger.info(f'Mismatching number of models and sets of parameters. '
+                                f'There are {len(self._nets)} models but {len(pretrained)} sets.')
+
+                for model, params in zip(self._nets, pretrained):
+                    model.load_state_dict(params)
+            else:
+                raise NotImplementedError
+
         if self.ema:
-            if isinstance(nets, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=.999)  # dummy decay
-            elif isinstance(nets, (list, tuple)):
-                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=.999)  # dummy decay
-                            for net_ in self.nets]
+            if isinstance(self._nets, T.nn.Module):
+                self.ema = ntk.utils.ModelEMA(self._nets.parameters(), decay=.999).to(self.device)  # dummy decay
+            elif isinstance(self._nets, (list, tuple)):
+                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=.999).to(self.device)  # dummy decay
+                            for net_ in self._nets]
             else:
                 raise NotImplementedError
 
             ema_sd = mon.load('ema.pt', method='torch', version=version)
             if isinstance(self.ema, (list, tuple)):
-                for ema in self.ema:
-                    ema.load_state_dict(ema_sd)
+                assert isinstance(ema_sd, (list, tuple))
+                for ema, ema_sd_ in zip(self.ema, ema_sd):
+                    ema.load_state_dict(ema_sd_)
                     ema.copy_to()
             else:
-                self.ema.load_state_dict(ema_sd)
+                if isinstance(ema_sd, (list, tuple)):
+                    self.ema.load_state_dict(ema_sd[0])
+                else:
+                    self.ema.load_state_dict(ema_sd)
                 self.ema.copy_to()
         else:
             self.ema = None
-            pretrained = mon.load('checkpoint.pt', method='torch',
-                                  version=version, map_location=self.device)['model_dict']
-            if isinstance(self._nets, T.nn.Module):
-                if isinstance(pretrained, dict):
-                    self._nets.load_state_dict(pretrained)
-                elif isinstance(pretrained, (list, tuple)):
-                    self._nets.load_state_dict(pretrained[0])
-                else:
-                    raise NotImplementedError
-            elif isinstance(self._nets, (list, tuple)):
-                if isinstance(pretrained, dict):
-                    logger.info(f'There are {len(self._nets)} models but found only one set of parameters')
-                    self._nets[0].load_state_dict(pretrained)
-                elif isinstance(pretrained, (list, tuple)):
-                    if len(pretrained) != len(self._nets):
-                        logger.info(f'Mismatching number of models and sets of parameters. '
-                                    f'There are {len(self._nets)} models but {len(pretrained)} sets.')
-
-                    for model, params in zip(self._nets, pretrained):
-                        model.load_state_dict(params)
-                else:
-                    raise NotImplementedError
 
         for k, v in kwargs.items():
             if not hasattr(self, k):
