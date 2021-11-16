@@ -29,13 +29,14 @@ class Trainer(ABC):
                  scheduler_iter: bool = False,
                  ema: bool = False,
                  ema_decay: float = .999,
+                 ema_decay_discount: bool = True,
                  num_epochs: int = None,
                  val_freq: int = None,
                  num_workers: int = 8,
                  device: Union[int, str] = 'cpu',
                  distributed: bool = False,
                  fp16: bool = False,
-                 sample_inputs: Any = None,
+                 sample_inputs: List[Any] = None,
                  output_root: str = None,
                  backup: Union[str, List[str]] = None,
                  excludes: Union[str, List[str]] = None,
@@ -62,6 +63,7 @@ class Trainer(ABC):
         self._nets_ddp = nets
         self.ema = ema
         self.ema_decay = ema_decay
+        self.ema_decay_discount = ema_decay_discount
 
         if self.distributed:
             self._initialize_distributed_mode()
@@ -110,9 +112,11 @@ class Trainer(ABC):
 
         if self.ema:
             if isinstance(self.nets, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=self.ema_decay, use_num_updates=True)
+                self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=self.ema_decay,
+                                              use_num_updates=self.ema_decay_discount)
             elif isinstance(self.nets, (list, tuple)):
-                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=self.ema_decay, use_num_updates=True)
+                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=self.ema_decay,
+                                               use_num_updates=self.ema_decay_discount)
                             for net_ in self.nets]
             else:
                 raise NotImplementedError
