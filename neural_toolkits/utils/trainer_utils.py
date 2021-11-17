@@ -1,3 +1,4 @@
+import math
 import torch as T
 from torch.utils.data import DataLoader
 import neural_toolkits as ntk
@@ -11,7 +12,7 @@ from abc import ABC
 import abc
 from typing import List, Union, Any
 
-__all__ = ['Trainer', 'Evaluator']
+__all__ = ['Trainer', 'Evaluator', 'CONSTANTS']
 
 
 class CONSTANTS:
@@ -38,7 +39,7 @@ class Trainer(ABC):
                  val_batch_size: int = None,
                  lr_scheduler: T.optim.lr_scheduler._LRScheduler = None,
                  scheduler_iter: bool = False,
-                 ema: bool = False,
+                 ema: Union[None, T.nn.Module, List[T.nn.Module]] = None,
                  ema_decay: float = .999,
                  ema_decay_discount: bool = True,
                  num_epochs: int = None,
@@ -117,14 +118,14 @@ class Trainer(ABC):
             else:
                 raise NotImplementedError
 
-        if self.ema:
-            if isinstance(self.nets, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self.nets.parameters(), decay=self.ema_decay,
+        if self.ema is not None:
+            if isinstance(self.ema, T.nn.Module):
+                self.ema = ntk.utils.ModelEMA(self.ema.parameters(), decay=self.ema_decay,
                                               use_num_updates=self.ema_decay_discount)
-            elif isinstance(self.nets, (list, tuple)):
-                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=self.ema_decay,
+            elif isinstance(self.ema, (list, tuple)):
+                self.ema = [ntk.utils.ModelEMA(ema_.parameters(), decay=self.ema_decay,
                                                use_num_updates=self.ema_decay_discount)
-                            for net_ in self.nets]
+                            for ema_ in ema]
             else:
                 raise NotImplementedError
         else:
@@ -170,8 +171,6 @@ class Trainer(ABC):
         args = inspect.BoundArguments(inspect.signature(self.mon.initialize), kwargs)
         if self.checkpoint is None:
             self.mon.initialize(model_name, output_root, **args.kwargs)
-            if backup is not None:
-                self.mon.backup(backup, ignores=excludes, includes=includes)
         else:
             self.mon.initialize(current_folder=checkpoint, **args.kwargs)
 
@@ -184,8 +183,8 @@ class Trainer(ABC):
 
             ckpt = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
                             version=version, map_location=map_location)
-            self.mon.epoch = ckpt[CONSTANTS.EPOCH]
-            self.mon.iter = mon.epoch * len(train_set)
+            self.mon.epoch = ckpt[CONSTANTS.EPOCH] + 1  # ckpt is saved at the end of epoch before epoch is incremented
+            self.mon.iter = mon.epoch * math.ceil(len(train_set) / batch_size)
             self.mon.num_iters = None
 
             pretrained = ckpt[CONSTANTS.MODEL_DICT]
@@ -244,6 +243,9 @@ class Trainer(ABC):
                         self.ema.load_state_dict(ema_sd[0])
                     else:
                         self.ema.load_state_dict(ema_sd)
+
+        if backup is not None:
+            self.mon.backup(backup, ignores=excludes, includes=includes)
 
         if fp16:
             try:
@@ -375,7 +377,7 @@ class Evaluator(ABC):
                  batch_size: int,
                  val_set: T.utils.data.Dataset = None,
                  prefetcher: bool = False,
-                 ema: bool = False,
+                 ema: Union[T.nn.Module, List[T.nn.Module]] = None,
                  num_workers: int = 8,
                  device: Union[int, str] = 'cpu',
                  distributed: bool = False,
@@ -504,11 +506,11 @@ class Evaluator(ABC):
             self.nets = amp.initialize(self.nets, opt_level=amp_opt_level)
 
         if self.ema:
-            if isinstance(self._nets, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self._nets.parameters(), decay=.999).to(self.device)  # dummy decay
-            elif isinstance(self._nets, (list, tuple)):
-                self.ema = [ntk.utils.ModelEMA(net_.parameters(), decay=.999).to(self.device)  # dummy decay
-                            for net_ in self._nets]
+            if isinstance(self.ema, T.nn.Module):
+                self.ema = ntk.utils.ModelEMA(self.ema.parameters(), decay=.999)
+            elif isinstance(self.ema, (list, tuple)):
+                self.ema = [ntk.utils.ModelEMA(ema_.parameters(), decay=.999)
+                            for ema_ in ema]
             else:
                 raise NotImplementedError
 
