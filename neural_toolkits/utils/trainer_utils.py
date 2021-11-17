@@ -10,7 +10,7 @@ import os
 import inspect
 from abc import ABC
 import abc
-from typing import List, Union, Any
+from typing import List, Union, Any, Callable
 
 __all__ = ['Trainer', 'Evaluator', 'CONSTANTS']
 
@@ -34,8 +34,11 @@ class Trainer(ABC):
                  batch_size: int,
                  train_set: T.utils.data.Dataset,
                  sampler: T.utils.data.Sampler = None,
+                 collate_fn: Callable = None,
                  prefetcher: bool = False,
                  val_set: T.utils.data.Dataset = None,
+                 val_sampler: T.utils.data.Sampler = None,
+                 val_collate_fn: Callable = None,
                  val_batch_size: int = None,
                  lr_scheduler: T.optim.lr_scheduler._LRScheduler = None,
                  scheduler_iter: bool = False,
@@ -73,6 +76,9 @@ class Trainer(ABC):
         self.device = 'cpu' if self.distributed else device
         self.fp16 = fp16
         self.sampler = sampler
+        self.collate_fn = collate_fn
+        self.val_sampler = val_sampler
+        self.val_collate_fn = val_collate_fn
         self.lr_scheduler = lr_scheduler
         self.scheduler_iter = scheduler_iter
         self.nets = None
@@ -139,7 +145,9 @@ class Trainer(ABC):
         self.train_loader = DataLoader(
             self.train_set,
             batch_size=batch_size,
+            shuffle=True if self.sampler is None else False,
             sampler=self.sampler,
+            collate_fn=collate_fn,
             num_workers=num_workers,
             pin_memory=True,
             **args.kwargs
@@ -152,10 +160,16 @@ class Trainer(ABC):
 
         self.val_loader = None
         if val_set is not None:
+            if val_sampler is None:
+                if distributed:
+                    self.val_sampler = T.utils.data.distributed.DistributedSampler(self.val_set, shuffle=False)
+
             self.val_loader = DataLoader(
                 self.val_set,
                 batch_size=batch_size if val_batch_size is None else val_batch_size,
                 shuffle=False,
+                sampler=self.val_sampler,
+                collate_fn=val_collate_fn,
                 num_workers=num_workers,
                 pin_memory=True,
                 **args.kwargs
