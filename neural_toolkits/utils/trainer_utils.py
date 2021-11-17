@@ -363,7 +363,7 @@ class Trainer(ABC):
         self.evaluate(**arguments.kwargs)
 
     def run_training(self, **kwargs):
-        for _ in mon.iter_epoch(mon.epoch, range(self.num_epochs)):
+        for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
             self.train_step(**kwargs)
 
         if dist.is_initialized():
