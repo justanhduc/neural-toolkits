@@ -29,9 +29,9 @@ class CONSTANTS:
     CUSTOM_DICT = 'custom_dict'
 
 
-def _execute(fn: Callable, self, **kwargs) -> Dict:
-    args = inspect.BoundArguments(inspect.signature(fn), kwargs)
-    res: dict = fn(self, **args.kwargs)
+def _execute(fn: Callable, **kwargs) -> Dict:
+    args = inspect.signature(fn).bind(**kwargs)
+    res: dict = fn(*args.args, **args.kwargs)
     if res is not None:
         kwargs.update(res)
 
@@ -364,9 +364,10 @@ class Trainer(ABC):
             else:
                 raise NotImplementedError
 
-            kwargs = _execute(self.on_begin_iteration, self, **kwargs)
+            kwargs = _execute(self.on_begin_iteration, **kwargs)
             batch = ntk.utils.batch_to_device(batch)
-            kwargs = _execute(self.learn, self, batch=batch, **kwargs)
+            kwargs['batch'] = batch
+            kwargs = _execute(self.learn, **kwargs)
             if self.ema is not None and self.process_index == 0:
                 if isinstance(self.ema, (list, tuple)):
                     for ema in self.ema:
@@ -382,7 +383,7 @@ class Trainer(ABC):
                 if mon.iter % self.val_freq == 0:
                     self.eval_step(**kwargs)
 
-            kwargs = _execute(self.on_end_iteration, self, **kwargs)
+            kwargs = _execute(self.on_end_iteration, **kwargs)
 
         if self.lr_scheduler is not None:
             if not self.scheduler_iter:
@@ -422,13 +423,13 @@ class Trainer(ABC):
         pass
 
     def run_training(self, **kwargs):
-        kwargs = _execute(self.on_before_training, self, **kwargs)
+        kwargs = _execute(self.on_before_training, **kwargs)
         for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
-            kwargs = _execute(self.on_begin_epoch, self, **kwargs)
+            kwargs = _execute(self.on_begin_epoch, **kwargs)
             self.train_step(**kwargs)
-            kwargs = _execute(self.on_end_epoch, self, **kwargs)
+            kwargs = _execute(self.on_end_epoch, **kwargs)
 
-        _execute(self.on_after_training, self, **kwargs)
+        _execute(self.on_after_training, **kwargs)
         if dist.is_initialized():
             dist.destroy_process_group()
 
