@@ -24,7 +24,9 @@ class CONSTANTS:
     LR_SCHED_DICT = 'lr_sched_dict'
     CHECKPOINT = 'checkpoint.pt'
     EMA_CHECKPOINT = 'ema.pt'
+    EMA_DICT = 'ema_dict'
     PKL_METHOD = 'torch'
+    CUSTOM_DICT = 'custom_dict'
 
 
 class Trainer(ABC):
@@ -89,6 +91,7 @@ class Trainer(ABC):
         self.checkpoint = checkpoint
         self.version = version
         self.num_latest_checkpoints = num_latest_checkpoints
+        self.states = {}
 
         if self.distributed:
             self._initialize_distributed_mode()
@@ -195,68 +198,9 @@ class Trainer(ABC):
             else:
                 raise NotImplementedError
 
-            ckpt = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
-                            version=version, map_location=map_location)
-            self.mon.epoch = ckpt[CONSTANTS.EPOCH] + 1  # ckpt is saved at the end of epoch before epoch is incremented
-            self.mon.iter = mon.epoch * math.ceil(len(train_set) / batch_size)
-            self.mon.num_iters = None
-
-            pretrained = ckpt[CONSTANTS.MODEL_DICT]
-            if isinstance(self._nets, T.nn.Module):
-                if isinstance(pretrained, dict):
-                    self._nets.load_state_dict(pretrained)
-                elif isinstance(pretrained, (list, tuple)):
-                    self._nets.load_state_dict(pretrained[0])
-                else:
-                    raise NotImplementedError
-            elif isinstance(self._nets, (list, tuple)):
-                if isinstance(pretrained, dict):
-                    logger.info(f'There are {len(self._nets)} models but found only one set of parameters')
-                    self._nets[0].load_state_dict(pretrained)
-                elif isinstance(pretrained, (list, tuple)):
-                    if len(pretrained) != len(self._nets):
-                        logger.info(f'Mismatching number of models and sets of parameters. '
-                                    f'There are {len(self._nets)} models but {len(pretrained)} sets.')
-
-                    for model, params in zip(self._nets, pretrained):
-                        model.load_state_dict(params)
-                else:
-                    raise NotImplementedError
-
-            if isinstance(self.optimizers, (list, tuple)):
-                assert len(self.optimizers) == len(ckpt[CONSTANTS.OPTIM_DICT])
-                for opt, state_dict in zip(self.optimizers, ckpt[CONSTANTS.OPTIM_DICT]):
-                    opt.load_state_dict(state_dict)
-            else:
-                self.optimizers.load_state_dict(ckpt[CONSTANTS.OPTIM_DICT])
-
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.load_state_dict(ckpt[CONSTANTS.LR_SCHED_DICT])
-
-            if self.fp16:
-                try:
-                    from apex import amp
-                except ModuleNotFoundError:
-                    print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
-                    raise
-
-                amp.load_state_dict(ckpt[CONSTANTS.AMP])
-
-            if self.ema is not None:
-                ema_sd = mon.load(CONSTANTS.EMA_CHECKPOINT, method=CONSTANTS.PKL_METHOD, version=version)
-                if isinstance(self.ema, (list, tuple)):
-                    assert isinstance(ema_sd, (list, tuple))
-                    if len(ema_sd) != len(self.ema):
-                        logger.warning(f'There are {len(self.ema)} model EMAs but {len(ema_sd)} state dicts!')
-
-                    for ema, ema_sd_ in zip(self.ema, ema_sd):
-                        ema.load_state_dict(ema_sd_)
-                else:
-                    if isinstance(ema_sd, (list, tuple)):
-                        logger.warning(f'There are one model EMA but {len(ema_sd)} state dicts!')
-                        self.ema.load_state_dict(ema_sd[0])
-                    else:
-                        self.ema.load_state_dict(ema_sd)
+            ckpt: dict = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
+                                  version=version, map_location=map_location)
+            self.load_state_dict(ckpt)
 
         if backup is not None:
             self.mon.backup(backup, ignores=excludes, includes=includes)
@@ -306,28 +250,99 @@ class Trainer(ABC):
     def register_states(self, states: dict):
         self.states.update(states)
 
-    def _dump_states(self):
-        self.states = {
+    def state_dict(self):
+        states = {
             CONSTANTS.MODEL_DICT: [net.state_dict() for net in self._nets],
             CONSTANTS.OPTIM_DICT: [opt.state_dict() for opt in self.optimizers],
             CONSTANTS.EPOCH: self.mon.epoch,
             CONSTANTS.ITERATION: self.mon.iter
         }
+
         if self.fp16:
-            self.states[CONSTANTS.AMP] = amp.state_dict()
+            states[CONSTANTS.AMP] = amp.state_dict()
 
         if self.lr_scheduler is not None:
-            self.states[CONSTANTS.LR_SCHED_DICT] = self.lr_scheduler.state_dict()
+            states[CONSTANTS.LR_SCHED_DICT] = self.lr_scheduler.state_dict()
 
-        mon.dump(CONSTANTS.CHECKPOINT, self.states, method=CONSTANTS.PKL_METHOD, keep=self.num_latest_checkpoints)
         if self.ema is not None:
             if isinstance(self.ema, (list, tuple)):
-                state_dict = [ema.state_dict() for ema in self.ema]
-                mon.dump(CONSTANTS.EMA_CHECKPOINT, state_dict,
-                         method=CONSTANTS.PKL_METHOD, keep=self.num_latest_checkpoints)
+                states[CONSTANTS.EMA_DICT] = [ema.state_dict() for ema in self.ema]
             else:
-                mon.dump(CONSTANTS.EMA_CHECKPOINT, self.ema.state_dict(),
-                         method=CONSTANTS.PKL_METHOD, keep=self.num_latest_checkpoints)
+                states[CONSTANTS.EMA_DICT] = self.ema.state_dict()
+
+        states[CONSTANTS.CUSTOM_DICT] = self.states.copy()
+        return states
+
+    def load_state_dict(self, state_dict: dict):
+        self.mon.epoch = state_dict[CONSTANTS.EPOCH] + 1  # ckpt is saved at the end of epoch before epoch is incremented
+        self.mon.iter = mon.epoch * math.ceil(len(self.train_set) / self.batch_size)
+        self.mon.num_iters = None
+        self.states = state_dict[CONSTANTS.CUSTOM_DICT]
+
+        pretrained = state_dict[CONSTANTS.MODEL_DICT]
+        if isinstance(self._nets, T.nn.Module):
+            if isinstance(pretrained, dict):
+                self._nets.load_state_dict(pretrained)
+            elif isinstance(pretrained, (list, tuple)):
+                self._nets.load_state_dict(pretrained[0])
+            else:
+                raise NotImplementedError
+        elif isinstance(self._nets, (list, tuple)):
+            if isinstance(pretrained, dict):
+                logger.info(f'There are {len(self._nets)} models but found only one set of parameters')
+                self._nets[0].load_state_dict(pretrained)
+            elif isinstance(pretrained, (list, tuple)):
+                if len(pretrained) != len(self._nets):
+                    logger.info(f'Mismatching number of models and sets of parameters. '
+                                f'There are {len(self._nets)} models but {len(pretrained)} sets.')
+
+                for model, params in zip(self._nets, pretrained):
+                    model.load_state_dict(params)
+            else:
+                raise NotImplementedError
+
+        if isinstance(self.optimizers, (list, tuple)):
+            assert len(self.optimizers) == len(state_dict[CONSTANTS.OPTIM_DICT])
+            for opt, state_dict in zip(self.optimizers, state_dict[CONSTANTS.OPTIM_DICT]):
+                opt.load_state_dict(state_dict)
+        else:
+            self.optimizers.load_state_dict(state_dict[CONSTANTS.OPTIM_DICT])
+
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.load_state_dict(state_dict[CONSTANTS.LR_SCHED_DICT])
+
+        if self.fp16:
+            try:
+                from apex import amp
+            except ModuleNotFoundError:
+                print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
+                raise
+
+            amp.load_state_dict(state_dict[CONSTANTS.AMP])
+
+        if self.ema is not None:
+            try:
+                ema_sd = state_dict[CONSTANTS.EMA_DICT]
+            except KeyError:  # try legacy load
+                ema_sd = mon.load(CONSTANTS.EMA_CHECKPOINT, method=CONSTANTS.PKL_METHOD, version=self.version)
+
+            if isinstance(self.ema, (list, tuple)):
+                assert isinstance(ema_sd, (list, tuple))
+                if len(ema_sd) != len(self.ema):
+                    logger.warning(f'There are {len(self.ema)} model EMAs but {len(ema_sd)} state dicts!')
+
+                for ema, ema_sd_ in zip(self.ema, ema_sd):
+                    ema.load_state_dict(ema_sd_)
+            else:
+                if isinstance(ema_sd, (list, tuple)):
+                    logger.warning(f'There are one model EMA but {len(ema_sd)} state dicts!')
+                    self.ema.load_state_dict(ema_sd[0])
+                else:
+                    self.ema.load_state_dict(ema_sd)
+
+    def _dump_states(self):
+        states = self.state_dict()
+        mon.dump(CONSTANTS.CHECKPOINT, states, method=CONSTANTS.PKL_METHOD, keep=self.num_latest_checkpoints)
 
     def train_step(self, **kwargs):
         for batch in mon.iter_batch(self.train_loader):
@@ -477,7 +492,45 @@ class Evaluator(ABC):
 
         ckpt = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
                         version=version, map_location=map_location)
-        pretrained = ckpt[CONSTANTS.MODEL_DICT]
+        self.load_state_dict(ckpt)
+
+        if fp16:
+            try:
+                from apex import amp
+            except ModuleNotFoundError:
+                print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
+                raise
+
+            assert self.device != 'cpu', 'Cannot use fp16 training on CPU!'
+            amp_opt_level = 'O1'
+            self.nets = amp.initialize(self.nets, opt_level=amp_opt_level)
+
+        for k, v in kwargs.items():
+            if not hasattr(self, k):
+                if isinstance(v, (T.Tensor, T.nn.Module)):
+                    v = v.to(self.device)
+                setattr(self, k, v)
+
+        if isinstance(self.nets, T.nn.Module):
+            self.nets.eval()
+        elif isinstance(self.nets, (list, tuple)):
+            for net_ in self.nets:
+                net_.eval()
+        else:
+            raise NotImplementedError
+
+    def _initialize_distributed_mode(self):
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '9999'
+        if not dist.is_initialized():
+            dist.init_process_group(backend='nccl')
+        self.process_index = dist.get_rank()
+        self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
+        self.device = T.device("cuda", self.local_process_index)
+        T.cuda.set_device(self.device)
+
+    def load_state_dict(self, state_dict: dict):
+        pretrained = state_dict[CONSTANTS.MODEL_DICT]
         if isinstance(self._nets, T.nn.Module):
             if isinstance(pretrained, dict):
                 self._nets.load_state_dict(pretrained)
@@ -506,66 +559,27 @@ class Evaluator(ABC):
                 print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
                 raise
 
-            amp.load_state_dict(ckpt[CONSTANTS.AMP])
+            amp.load_state_dict(state_dict[CONSTANTS.AMP])
 
-        if fp16:
+        if self.ema is not None:
             try:
-                from apex import amp
-            except ModuleNotFoundError:
-                print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
-                raise
+                ema_sd = state_dict[CONSTANTS.EMA_DICT]
+            except KeyError:  # try legacy load
+                ema_sd = mon.load(CONSTANTS.EMA_CHECKPOINT, method=CONSTANTS.PKL_METHOD, version=self.version)
 
-            assert self.device != 'cpu', 'Cannot use fp16 training on CPU!'
-            amp_opt_level = 'O1'
-            self.nets = amp.initialize(self.nets, opt_level=amp_opt_level)
-
-        if self.ema:
-            if isinstance(self.ema, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self.ema.parameters(), decay=.999)
-            elif isinstance(self.ema, (list, tuple)):
-                self.ema = [ntk.utils.ModelEMA(ema_.parameters(), decay=.999)
-                            for ema_ in ema]
-            else:
-                raise NotImplementedError
-
-            ema_sd = mon.load(CONSTANTS.EMA_CHECKPOINT, method=CONSTANTS.PKL_METHOD, version=version)
             if isinstance(self.ema, (list, tuple)):
                 assert isinstance(ema_sd, (list, tuple))
+                if len(ema_sd) != len(self.ema):
+                    logger.warning(f'There are {len(self.ema)} model EMAs but {len(ema_sd)} state dicts!')
+
                 for ema, ema_sd_ in zip(self.ema, ema_sd):
                     ema.load_state_dict(ema_sd_)
-                    ema.copy_to()
             else:
                 if isinstance(ema_sd, (list, tuple)):
+                    logger.warning(f'There are one model EMA but {len(ema_sd)} state dicts!')
                     self.ema.load_state_dict(ema_sd[0])
                 else:
                     self.ema.load_state_dict(ema_sd)
-                self.ema.copy_to()
-        else:
-            self.ema = None
-
-        for k, v in kwargs.items():
-            if not hasattr(self, k):
-                if isinstance(v, (T.Tensor, T.nn.Module)):
-                    v = v.to(self.device)
-                setattr(self, k, v)
-
-        if isinstance(self.nets, T.nn.Module):
-            self.nets.eval()
-        elif isinstance(self.nets, (list, tuple)):
-            for net_ in self.nets:
-                net_.eval()
-        else:
-            raise NotImplementedError
-
-    def _initialize_distributed_mode(self):
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '9999'
-        if not dist.is_initialized():
-            dist.init_process_group(backend='nccl')
-        self.process_index = dist.get_rank()
-        self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
-        self.device = T.device("cuda", self.local_process_index)
-        T.cuda.set_device(self.device)
 
     @abc.abstractmethod
     def evaluate(self, **kwargs):
