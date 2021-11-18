@@ -10,7 +10,7 @@ import os
 import inspect
 from abc import ABC
 import abc
-from typing import List, Union, Any, Callable
+from typing import List, Union, Any, Callable, Dict
 
 __all__ = ['Trainer', 'Evaluator', 'CONSTANTS']
 
@@ -27,6 +27,15 @@ class CONSTANTS:
     EMA_DICT = 'ema_dict'
     PKL_METHOD = 'torch'
     CUSTOM_DICT = 'custom_dict'
+
+
+def _execute(fn: Callable, self, **kwargs) -> Dict:
+    args = inspect.BoundArguments(inspect.signature(fn), kwargs)
+    res: dict = fn(self, **args.kwargs)
+    if res is not None:
+        kwargs.update(res)
+
+    return kwargs
 
 
 class Trainer(ABC):
@@ -241,10 +250,10 @@ class Trainer(ABC):
         T.cuda.set_device(self.device)
 
     @abc.abstractmethod
-    def learn(self, batch, **kwargs):
+    def learn(self, batch, **kwargs) -> Union[None, Dict]:
         raise NotImplementedError
 
-    def evaluate(self, **kwargs):
+    def evaluate(self, **kwargs) -> Union[None, Dict]:
         pass
 
     def register_states(self, states: dict):
@@ -354,9 +363,9 @@ class Trainer(ABC):
             else:
                 raise NotImplementedError
 
+            kwargs = _execute(self.on_begin_iteration, self, **kwargs)
             batch = ntk.utils.batch_to_device(batch)
-            arguments = inspect.BoundArguments(inspect.signature(self.learn), kwargs)
-            self.learn(batch=batch, **arguments.kwargs)
+            kwargs = _execute(self.learn, self, batch=batch, **kwargs)
             if self.ema is not None and self.process_index == 0:
                 if isinstance(self.ema, (list, tuple)):
                     for ema in self.ema:
@@ -371,6 +380,8 @@ class Trainer(ABC):
             if self.val_freq is not None:
                 if mon.iter % self.val_freq == 0:
                     self.eval_step(**kwargs)
+
+            kwargs = _execute(self.on_end_iteration, self, **kwargs)
 
         if self.lr_scheduler is not None:
             if not self.scheduler_iter:
@@ -391,10 +402,32 @@ class Trainer(ABC):
         arguments = inspect.BoundArguments(inspect.signature(self.evaluate), kwargs)
         self.evaluate(**arguments.kwargs)
 
-    def run_training(self, **kwargs):
-        for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
-            self.train_step(**kwargs)
+    def on_before_training(self, **kwargs) -> Union[None, Dict]:
+        pass
 
+    def on_after_training(self, **kwargs) -> Union[None, Dict]:
+        pass
+
+    def on_begin_epoch(self, **kwargs) -> Union[None, Dict]:
+        pass
+
+    def on_end_epoch(self, **kwargs) -> Union[None, Dict]:
+        pass
+
+    def on_begin_iteration(self, **kwargs) -> Union[None, Dict]:
+        pass
+
+    def on_end_iteration(self, **kwargs) -> Union[None, Dict]:
+        pass
+
+    def run_training(self, **kwargs):
+        kwargs = _execute(self.on_before_training, self, **kwargs)
+        for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
+            kwargs = _execute(self.on_begin_epoch, self, **kwargs)
+            self.train_step(**kwargs)
+            kwargs = _execute(self.on_end_epoch, self, **kwargs)
+
+        _execute(self.on_after_training, self, **kwargs)
         if dist.is_initialized():
             dist.destroy_process_group()
 
