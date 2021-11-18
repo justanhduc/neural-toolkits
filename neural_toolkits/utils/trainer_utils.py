@@ -286,7 +286,8 @@ class Trainer(ABC):
         self.mon.epoch = state_dict[CONSTANTS.EPOCH] + 1  # ckpt is saved at the end of epoch before epoch is incremented
         self.mon.iter = mon.epoch * math.ceil(len(self.train_set) / self.batch_size)
         self.mon.num_iters = None
-        self.states = state_dict[CONSTANTS.CUSTOM_DICT]
+        if CONSTANTS.CUSTOM_DICT in state_dict:  # legacy load
+            self.states = state_dict[CONSTANTS.CUSTOM_DICT]
 
         pretrained = state_dict[CONSTANTS.MODEL_DICT]
         if isinstance(self._nets, T.nn.Module):
