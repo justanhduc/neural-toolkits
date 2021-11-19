@@ -323,8 +323,8 @@ class Trainer(ABC, _DistributedMixin):
 
         if isinstance(self.optimizers, (list, tuple)):
             assert len(self.optimizers) == len(state_dict[CONSTANTS.OPTIM_DICT])
-            for opt, state_dict in zip(self.optimizers, state_dict[CONSTANTS.OPTIM_DICT]):
-                opt.load_state_dict(state_dict)
+            for opt, sd in zip(self.optimizers, state_dict[CONSTANTS.OPTIM_DICT]):
+                opt.load_state_dict(sd)
         else:
             self.optimizers.load_state_dict(state_dict[CONSTANTS.OPTIM_DICT])
 
