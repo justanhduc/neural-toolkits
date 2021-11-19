@@ -38,7 +38,25 @@ def _execute(fn: Callable, **kwargs) -> Dict:
     return kwargs
 
 
-class Trainer(ABC):
+class _DistributedMixin:
+    def _initialize_distributed_mode(self):
+        self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
+        self.world_size = int(os.environ.get('WORLD_SIZE', -1))
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = self.master_port
+        if not dist.is_initialized():
+            dist.init_process_group(backend='nccl')
+        self.process_index = dist.get_rank()
+        self.device = T.device("cuda", self.local_process_index)
+        T.cuda.set_device(self.device)
+
+    def destroy(self):
+        if dist.is_initialized():
+            dist.barrier()
+            dist.destroy_process_group()
+
+
+class Trainer(ABC, _DistributedMixin):
     def __init__(self,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
                  optimizers: Union[T.optim.Optimizer, List[T.optim.Optimizer]],
@@ -61,6 +79,7 @@ class Trainer(ABC):
                  num_workers: int = 8,
                  device: Union[int, str] = 'cpu',
                  distributed: bool = False,
+                 master_port: str = '34562',
                  fp16: bool = False,
                  sample_inputs: List[Any] = None,
                  model_name: str = None,
@@ -84,6 +103,7 @@ class Trainer(ABC):
         self.kwargs = kwargs
         self.process_index = 0
         self.distributed = distributed
+        self.master_port = master_port
         self.device = 'cpu' if self.distributed else device
         self.fp16 = fp16
         self.sampler = sampler
@@ -238,16 +258,6 @@ class Trainer(ABC):
                 if isinstance(v, (T.Tensor, T.nn.Module)):
                     v = v.to(self.device)
                 setattr(self, k, v)
-
-    def _initialize_distributed_mode(self):
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '9999'
-        if not dist.is_initialized():
-            dist.init_process_group(backend='nccl')
-        self.process_index = dist.get_rank()
-        self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
-        self.device = T.device("cuda", self.local_process_index)
-        T.cuda.set_device(self.device)
 
     @abc.abstractmethod
     def learn(self, batch, **kwargs) -> Union[None, Dict]:
@@ -430,11 +440,10 @@ class Trainer(ABC):
             kwargs = _execute(self.on_end_epoch, **kwargs)
 
         _execute(self.on_after_training, **kwargs)
-        if dist.is_initialized():
-            dist.destroy_process_group()
+        self.destroy()
 
 
-class Evaluator(ABC):
+class Evaluator(ABC, _DistributedMixin):
     def __init__(self,
                  checkpoint: str,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
@@ -554,16 +563,6 @@ class Evaluator(ABC):
         else:
             raise NotImplementedError
 
-    def _initialize_distributed_mode(self):
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '9999'
-        if not dist.is_initialized():
-            dist.init_process_group(backend='nccl')
-        self.process_index = dist.get_rank()
-        self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
-        self.device = T.device("cuda", self.local_process_index)
-        T.cuda.set_device(self.device)
-
     def load_state_dict(self, state_dict: dict):
         pretrained = state_dict[CONSTANTS.MODEL_DICT]
         if isinstance(self._nets, T.nn.Module):
@@ -624,5 +623,4 @@ class Evaluator(ABC):
         with T.no_grad():
             self.evaluate(**kwargs)
 
-        if dist.is_initialized():
-            dist.destroy_process_group()
+        self.destroy()
