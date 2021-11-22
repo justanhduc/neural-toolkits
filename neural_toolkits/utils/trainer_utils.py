@@ -243,7 +243,11 @@ class Trainer(ABC, _DistributedMixin):
 
             assert self.device != 'cpu', 'Cannot use fp16 training on CPU!'
             amp_opt_level = 'O1'
-            self.nets, self.optimizers = amp.initialize(self.nets, self.optimizers, opt_level=amp_opt_level)
+            self.nets, self.optimizers = \
+                amp.initialize(list(self.nets) if not isinstance(self.nets, T.nn.Module) else self.nets,
+                               list(self.optimizers) if not isinstance(
+                                   self.optimizers, T.optim.Optimizer) else self.optimizers,
+                               opt_level=amp_opt_level)
 
         if sample_inputs is not None:
             sample_inputs = ntk.utils.batch_to_device(sample_inputs, self.device)
@@ -278,6 +282,7 @@ class Trainer(ABC, _DistributedMixin):
         }
 
         if self.fp16:
+            from apex import amp
             states[CONSTANTS.AMP] = amp.state_dict()
 
         if self.lr_scheduler is not None:
@@ -331,7 +336,7 @@ class Trainer(ABC, _DistributedMixin):
         if self.lr_scheduler is not None:
             self.lr_scheduler.load_state_dict(state_dict[CONSTANTS.LR_SCHED_DICT])
 
-        if self.fp16:
+        if self.fp16 and CONSTANTS.AMP in state_dict:
             try:
                 from apex import amp
             except ModuleNotFoundError:
@@ -363,6 +368,31 @@ class Trainer(ABC, _DistributedMixin):
     def _dump_states(self):
         states = self.state_dict()
         mon.dump(CONSTANTS.CHECKPOINT, states, method=CONSTANTS.PKL_METHOD, keep=self.num_latest_checkpoints)
+
+    def update_model(self, loss: T.Tensor, optimizer: T.optim.Optimizer, **kwargs):
+        """
+        Backward the loss and run one step of optimization.
+        If `fp16` is used, the loss will be scaled before backward.
+
+        :param loss:
+            The error to be backpropagated.
+        :param optimizer:
+            The optimizer associated with the loss.
+        :param kwargs:
+            Extra arguments to `loss.backward` and `optimizer.step`.
+        :return: `None`.
+        """
+        if self.fp16:
+            from apex import amp
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                args = inspect.signature(scaled_loss.backward).bind(**kwargs)
+                scaled_loss.backward(*args.args, **args.kwargs)
+        else:
+            args = inspect.signature(loss.backward).bind(**kwargs)
+            loss.backward(*args.args, **args.kwargs)
+
+        args = inspect.signature(optimizer.step).bind(**kwargs)
+        optimizer.step(*args.args, **args.kwargs)
 
     def train_step(self, **kwargs):
         for batch in mon.iter_batch(self.train_loader):
@@ -547,7 +577,8 @@ class Evaluator(ABC, _DistributedMixin):
 
             assert self.device != 'cpu', 'Cannot use fp16 training on CPU!'
             amp_opt_level = 'O1'
-            self.nets = amp.initialize(self.nets, opt_level=amp_opt_level)
+            self.nets = amp.initialize(list(self.nets) if not isinstance(self.nets, T.nn.Module) else self.nets,
+                                       opt_level=amp_opt_level)
 
         for k, v in kwargs.items():
             if not hasattr(self, k):
@@ -586,7 +617,7 @@ class Evaluator(ABC, _DistributedMixin):
             else:
                 raise NotImplementedError
 
-        if self.fp16:
+        if self.fp16 and CONSTANTS.AMP in state_dict:
             try:
                 from apex import amp
             except ModuleNotFoundError:
