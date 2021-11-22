@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from . import root_logger
 
-__all__ = ['deprecated', 'get_non_none', 'spectral_norm', 'add_custom_repr']
+__all__ = ['deprecated', 'get_non_none', 'spectral_norm', 'remove_spectral_norm', 'add_custom_repr']
 
 
 def add_custom_repr(cls):
@@ -92,5 +92,40 @@ def spectral_norm(module, name='weight', n_power_iterations=1, eps=1e-12, dim=No
     else:
         for mod_name, mod in module.named_children():
             mod = spectral_norm(mod, name, n_power_iterations, eps, dim, exclude=exclude)
+            module.__setattr__(mod_name, mod)
+        return module
+
+
+def remove_spectral_norm(module, name='weight', exclude=None):
+    """
+    Applies :func:`torch.nn.utils.remove_spectral_norm` recursively to `module` and all of
+    its submodules.
+
+    :param module:
+        containing module.
+    :param name:
+        name of weight parameter.
+        Default: ``'weight'``.
+    :param exclude:
+        a list of classes of which instances will not be applied SN.
+    :return:
+        the original module with the spectral norm hook.
+    """
+    excludes = [
+        nn.modules.batchnorm._NormBase,
+        nn.GroupNorm,
+        nn.LayerNorm
+    ]
+    if exclude is not None:
+        excludes = excludes + list(exclude)
+
+    if hasattr(module, name):
+        if not isinstance(module, tuple(excludes)):
+            module = nn.utils.remove_spectral_norm(module, name)
+
+        return module
+    else:
+        for mod_name, mod in module.named_children():
+            mod = remove_spectral_norm(mod, name, exclude=exclude)
             module.__setattr__(mod_name, mod)
         return module
