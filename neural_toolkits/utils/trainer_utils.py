@@ -38,6 +38,18 @@ def _execute(fn: Callable, **kwargs) -> Dict:
     return kwargs
 
 
+def convert_sync_batchnorm(model: Union[T.nn.Module, List[T.nn.Module]]):
+    if isinstance(model, T.nn.Module):
+        model = T.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    elif isinstance(model, (list, tuple)):
+        model = [T.nn.SyncBatchNorm.convert_sync_batchnorm(net_)
+                 if net_ is not None else None for net_ in model]
+    else:
+        raise NotImplementedError
+
+    return model
+
+
 class _DistributedMixin:
     def _initialize_distributed_mode(self):
         self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
@@ -124,25 +136,20 @@ class Trainer(ABC, _DistributedMixin):
 
         if self.distributed:
             self._initialize_distributed_mode()
-            if isinstance(nets, T.nn.Module):
-                self._nets = T.nn.SyncBatchNorm.convert_sync_batchnorm(nets)
-            elif isinstance(nets, (list, tuple)):
-                self._nets = [T.nn.SyncBatchNorm.convert_sync_batchnorm(net_) for net_ in nets]
-            else:
-                raise NotImplementedError
-
-            if isinstance(self._nets, T.nn.Module):
-                self._nets.to(self.device)
-            elif isinstance(self._nets, (list, tuple)):
-                for net_ in self._nets:
+            self._nets_ddp = convert_sync_batchnorm(nets)
+            if isinstance(self._nets_ddp, T.nn.Module):
+                self._nets_ddp.to(self.device)
+            elif isinstance(self._nets_ddp, (list, tuple)):
+                for net_ in self._nets_ddp:
                     net_.to(self.device)
             else:
                 raise NotImplementedError
 
             if isinstance(nets, T.nn.Module):
-                self._nets_ddp = DDP(nets, device_ids=[self.device], output_device=self.device)
+                self._nets_ddp = DDP(self._nets_ddp, device_ids=[self.device], output_device=self.device)
             elif isinstance(nets, (list, tuple)):
-                self._nets_ddp = [DDP(net_, device_ids=[self.device], output_device=self.device) for net_ in nets]
+                self._nets_ddp = [DDP(net_, device_ids=[self.device], output_device=self.device)
+                                  for net_ in self._nets_ddp]
             else:
                 raise NotImplementedError
             self.nets = self._nets_ddp
@@ -275,8 +282,10 @@ class Trainer(ABC, _DistributedMixin):
 
     def state_dict(self):
         states = {
-            CONSTANTS.MODEL_DICT: [net.state_dict() for net in self._nets],
-            CONSTANTS.OPTIM_DICT: [opt.state_dict() for opt in self.optimizers],
+            CONSTANTS.MODEL_DICT: [net.state_dict() for net in self._nets] if isinstance(
+                self._nets, (list, tuple)) else self._nets.state_dict(),
+            CONSTANTS.OPTIM_DICT: self.optimizers.state_dict() if isinstance(
+                self.optimizers, T.optim.Optimizer) else [opt.state_dict() for opt in self.optimizers],
             CONSTANTS.EPOCH: self.mon.epoch,
             CONSTANTS.ITERATION: self.mon.iter
         }
@@ -484,6 +493,8 @@ class Evaluator(ABC, _DistributedMixin):
                  num_workers: int = 8,
                  device: Union[int, str] = 'cpu',
                  distributed: bool = False,
+                 master_port: str = '34562',
+                 distributed_training: bool = False,
                  fp16: bool = False,
                  version: int = -1,
                  **kwargs):
@@ -495,6 +506,8 @@ class Evaluator(ABC, _DistributedMixin):
         self.kwargs = kwargs
         self.process_index = 0
         self.distributed = distributed
+        self.master_port = master_port
+        self.distributed_training = distributed_training
         self.fp16 = fp16
         self.nets = None
         self._nets_ddp = nets
@@ -503,25 +516,21 @@ class Evaluator(ABC, _DistributedMixin):
 
         if self.distributed:
             self._initialize_distributed_mode()
-            if isinstance(nets, T.nn.Module):
-                self._nets = T.nn.SyncBatchNorm.convert_sync_batchnorm(nets)
-            elif isinstance(nets, (list, tuple)):
-                self._nets = [T.nn.SyncBatchNorm.convert_sync_batchnorm(net_) for net_ in nets]
-            else:
-                raise NotImplementedError
-
-            if isinstance(self._nets, T.nn.Module):
-                self._nets.to(self.device)
-            elif isinstance(self._nets, (list, tuple)):
-                for net_ in self._nets:
-                    net_.to(self.device)
+            self._nets_ddp = convert_sync_batchnorm(nets)
+            if isinstance(self._nets_ddp, T.nn.Module):
+                self._nets_ddp.to(self.device)
+            elif isinstance(self._nets_ddp, (list, tuple)):
+                for net_ in self._nets_ddp:
+                    if net_ is not None:
+                        net_.to(self.device)
             else:
                 raise NotImplementedError
 
             if isinstance(nets, T.nn.Module):
-                self._nets_ddp = DDP(nets, device_ids=[device], output_device=device)
+                self._nets_ddp = DDP(self._nets_ddp, device_ids=[self.device], output_device=self.device)
             elif isinstance(nets, (list, tuple)):
-                self._nets_ddp = [DDP(net_, device_ids=[device], output_device=device) for net_ in nets]
+                self._nets_ddp = [DDP(net_, device_ids=[self.device], output_device=self.device)
+                                  if net_ is not None else None for net_ in self._nets_ddp]
             else:
                 raise NotImplementedError
             self.nets = self._nets_ddp
@@ -531,9 +540,21 @@ class Evaluator(ABC, _DistributedMixin):
                 self._nets.to(self.device)
             elif isinstance(self._nets, (list, tuple)):
                 for net_ in self._nets:
-                    net_.to(self.device)
+                    if net_ is not None:
+                        net_.to(self.device)
             else:
                 raise NotImplementedError
+
+        if self.ema is not None:
+            if isinstance(self.ema, T.nn.Module):
+                self.ema = ntk.utils.ModelEMA(self.ema.parameters(), decay=.999)
+            elif isinstance(self.ema, (list, tuple)):
+                self.ema = [ntk.utils.ModelEMA(ema_.parameters(), decay=.999)
+                            for ema_ in ema]
+            else:
+                raise NotImplementedError
+        else:
+            self.ema = None
 
         self.val_loader = None
         if val_set is not None:
@@ -564,9 +585,21 @@ class Evaluator(ABC, _DistributedMixin):
         else:
             raise NotImplementedError
 
-        ckpt = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
-                        version=version, map_location=map_location)
-        self.load_state_dict(ckpt)
+        if self.distributed_training:
+            self._nets = convert_sync_batchnorm(self._nets)
+
+        if self.distributed:
+            if self.process_index == 0:
+                ckpt = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
+                                version=version, map_location='cpu')
+                self.load_state_dict(ckpt)
+        else:
+            ckpt = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
+                            version=version, map_location=map_location)
+            self.load_state_dict(ckpt)
+
+        if self.distributed_training:
+            self._nets = ntk.utils.revert_sync_batchnorm(self._nets)
 
         if fp16:
             try:
@@ -590,30 +623,34 @@ class Evaluator(ABC, _DistributedMixin):
             self.nets.eval()
         elif isinstance(self.nets, (list, tuple)):
             for net_ in self.nets:
-                net_.eval()
+                if net_ is not None:
+                    net_.eval()
         else:
             raise NotImplementedError
 
-    def load_state_dict(self, state_dict: dict):
+    def load_state_dict(self, state_dict: Dict[str, Any]):
         pretrained = state_dict[CONSTANTS.MODEL_DICT]
         if isinstance(self._nets, T.nn.Module):
             if isinstance(pretrained, dict):
                 self._nets.load_state_dict(pretrained)
             elif isinstance(pretrained, (list, tuple)):
+                logger.warning('There is only one model but multiple sets of pretrained weights. '
+                               'Trying to load the first set...')
                 self._nets.load_state_dict(pretrained[0])
             else:
                 raise NotImplementedError
         elif isinstance(self._nets, (list, tuple)):
             if isinstance(pretrained, dict):
-                logger.info(f'There are {len(self._nets)} models but found only one set of parameters')
+                logger.warning(f'There are {len(self._nets)} models but found only one set of parameters')
                 self._nets[0].load_state_dict(pretrained)
             elif isinstance(pretrained, (list, tuple)):
                 if len(pretrained) != len(self._nets):
-                    logger.info(f'Mismatching number of models and sets of parameters. '
-                                f'There are {len(self._nets)} models but {len(pretrained)} sets.')
+                    logger.warning(f'Mismatching number of models and sets of parameters. '
+                                   f'There are {len(self._nets)} models but {len(pretrained)} sets.')
 
                 for model, params in zip(self._nets, pretrained):
-                    model.load_state_dict(params)
+                    if model is not None:
+                        model.load_state_dict(params)
             else:
                 raise NotImplementedError
 
