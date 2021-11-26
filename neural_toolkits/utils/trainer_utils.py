@@ -12,26 +12,25 @@ from abc import ABC
 import abc
 from typing import List, Union, Any, Callable, Dict
 
-__all__ = ['Trainer', 'Evaluator', 'CONSTANTS']
+__all__ = ['Trainer', 'Evaluator']
 
-
-class CONSTANTS:
-    MODEL_DICT = 'model_dict'
-    OPTIM_DICT = 'optim_dict'
-    EPOCH = 'epoch'
-    ITERATION = 'iteration'
-    AMP = 'amp'
-    LR_SCHED_DICT = 'lr_sched_dict'
-    CHECKPOINT = 'checkpoint.pt'
-    EMA_CHECKPOINT = 'ema.pt'
-    EMA_DICT = 'ema_dict'
-    PKL_METHOD = 'torch'
-    CUSTOM_DICT = 'custom_dict'
+model_dict = 'model_dict'
+optim_dict = 'optim_dict'
+epoch = 'epoch'
+iteration = 'iteration'
+AMP = 'amp'
+lr_sched_dict = 'lr_sched_dict'
+checkpoint = 'checkpoint.pt'
+ema_checkpoint = 'ema.pt'
+ema_dict = 'ema_dict'
+pkl_method = 'torch'
+custom_dict = 'custom_dict'
+BATCH = 'batch'
 
 
 def _execute(fn: Callable, **kwargs) -> Dict:
-    args = inspect.signature(fn).bind(**kwargs)
-    res: dict = fn(*args.args, **args.kwargs)
+    args = inspect.BoundArguments(inspect.signature(fn), kwargs)
+    res: Union[Dict, None] = fn(*args.args, **args.kwargs)
     if res is not None:
         kwargs.update(res)
 
@@ -234,7 +233,7 @@ class Trainer(ABC, _DistributedMixin):
             else:
                 raise NotImplementedError
 
-            ckpt: dict = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
+            ckpt: Dict = mon.load(checkpoint, method=pkl_method,
                                   version=version, map_location=map_location)
             self.load_state_dict(ckpt)
 
@@ -282,38 +281,38 @@ class Trainer(ABC, _DistributedMixin):
 
     def state_dict(self):
         states = {
-            CONSTANTS.MODEL_DICT: [net.state_dict() for net in self._nets] if isinstance(
+            model_dict: [net.state_dict() for net in self._nets] if isinstance(
                 self._nets, (list, tuple)) else self._nets.state_dict(),
-            CONSTANTS.OPTIM_DICT: self.optimizers.state_dict() if isinstance(
+            optim_dict: self.optimizers.state_dict() if isinstance(
                 self.optimizers, T.optim.Optimizer) else [opt.state_dict() for opt in self.optimizers],
-            CONSTANTS.EPOCH: self.mon.epoch,
-            CONSTANTS.ITERATION: self.mon.iter
+            epoch: self.mon.epoch,
+            iteration: self.mon.iter
         }
 
         if self.fp16:
             from apex import amp
-            states[CONSTANTS.AMP] = amp.state_dict()
+            states[AMP] = amp.state_dict()
 
         if self.lr_scheduler is not None:
-            states[CONSTANTS.LR_SCHED_DICT] = self.lr_scheduler.state_dict()
+            states[lr_sched_dict] = self.lr_scheduler.state_dict()
 
         if self.ema is not None:
             if isinstance(self.ema, (list, tuple)):
-                states[CONSTANTS.EMA_DICT] = [ema.state_dict() for ema in self.ema]
+                states[ema_dict] = [ema.state_dict() for ema in self.ema]
             else:
-                states[CONSTANTS.EMA_DICT] = self.ema.state_dict()
+                states[ema_dict] = self.ema.state_dict()
 
-        states[CONSTANTS.CUSTOM_DICT] = self.states.copy()
+        states[custom_dict] = self.states.copy()
         return states
 
     def load_state_dict(self, state_dict: dict):
-        self.mon.epoch = state_dict[CONSTANTS.EPOCH] + 1  # ckpt is saved at the end of epoch before epoch is incremented
+        self.mon.epoch = state_dict[epoch] + 1  # ckpt is saved at the end of epoch before epoch is incremented
         self.mon.iter = mon.epoch * math.ceil(len(self.train_set) / self.batch_size)
         self.mon.num_iters = None
-        if CONSTANTS.CUSTOM_DICT in state_dict:  # legacy load
-            self.states = state_dict[CONSTANTS.CUSTOM_DICT]
+        if custom_dict in state_dict:  # legacy load
+            self.states = state_dict[custom_dict]
 
-        pretrained = state_dict[CONSTANTS.MODEL_DICT]
+        pretrained = state_dict[model_dict]
         if isinstance(self._nets, T.nn.Module):
             if isinstance(pretrained, dict):
                 self._nets.load_state_dict(pretrained)
@@ -336,29 +335,29 @@ class Trainer(ABC, _DistributedMixin):
                 raise NotImplementedError
 
         if isinstance(self.optimizers, (list, tuple)):
-            assert len(self.optimizers) == len(state_dict[CONSTANTS.OPTIM_DICT])
-            for opt, sd in zip(self.optimizers, state_dict[CONSTANTS.OPTIM_DICT]):
+            assert len(self.optimizers) == len(state_dict[optim_dict])
+            for opt, sd in zip(self.optimizers, state_dict[optim_dict]):
                 opt.load_state_dict(sd)
         else:
-            self.optimizers.load_state_dict(state_dict[CONSTANTS.OPTIM_DICT])
+            self.optimizers.load_state_dict(state_dict[optim_dict])
 
         if self.lr_scheduler is not None:
-            self.lr_scheduler.load_state_dict(state_dict[CONSTANTS.LR_SCHED_DICT])
+            self.lr_scheduler.load_state_dict(state_dict[lr_sched_dict])
 
-        if self.fp16 and CONSTANTS.AMP in state_dict:
+        if self.fp16 and AMP in state_dict:
             try:
                 from apex import amp
             except ModuleNotFoundError:
                 print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
                 raise
 
-            amp.load_state_dict(state_dict[CONSTANTS.AMP])
+            amp.load_state_dict(state_dict[AMP])
 
         if self.ema is not None:
             try:
-                ema_sd = state_dict[CONSTANTS.EMA_DICT]
+                ema_sd = state_dict[ema_dict]
             except KeyError:  # try legacy load
-                ema_sd = mon.load(CONSTANTS.EMA_CHECKPOINT, method=CONSTANTS.PKL_METHOD, version=self.version)
+                ema_sd = mon.load(ema_checkpoint, method=pkl_method, version=self.version)
 
             if isinstance(self.ema, (list, tuple)):
                 assert isinstance(ema_sd, (list, tuple))
@@ -376,7 +375,7 @@ class Trainer(ABC, _DistributedMixin):
 
     def _dump_states(self):
         states = self.state_dict()
-        mon.dump(CONSTANTS.CHECKPOINT, states, method=CONSTANTS.PKL_METHOD, keep=self.num_latest_checkpoints)
+        mon.dump(checkpoint, states, method=pkl_method, keep=self.num_latest_checkpoints)
 
     def update_model(self, loss: T.Tensor, optimizer: T.optim.Optimizer, **kwargs):
         """
@@ -394,14 +393,11 @@ class Trainer(ABC, _DistributedMixin):
         if self.fp16:
             from apex import amp
             with amp.scale_loss(loss, optimizer) as scaled_loss:
-                args = inspect.signature(scaled_loss.backward).bind(**kwargs)
-                scaled_loss.backward(*args.args, **args.kwargs)
+                _execute(scaled_loss.backward, **kwargs)
         else:
-            args = inspect.signature(loss.backward).bind(**kwargs)
-            loss.backward(*args.args, **args.kwargs)
+            _execute(loss.backward, **kwargs)
 
-        args = inspect.signature(optimizer.step).bind(**kwargs)
-        optimizer.step(*args.args, **args.kwargs)
+        _execute(optimizer.step, **kwargs)
 
     def train_step(self, **kwargs):
         for batch in mon.iter_batch(self.train_loader):
@@ -415,7 +411,7 @@ class Trainer(ABC, _DistributedMixin):
 
             kwargs = _execute(self.on_begin_iteration, **kwargs)
             batch = ntk.utils.batch_to_device(batch)
-            kwargs['batch'] = batch
+            kwargs[BATCH] = batch
             kwargs = _execute(self.learn, **kwargs)
             if self.ema is not None and self.process_index == 0:
                 if isinstance(self.ema, (list, tuple)):
@@ -433,6 +429,7 @@ class Trainer(ABC, _DistributedMixin):
                     self.eval_step(**kwargs)
 
             kwargs = _execute(self.on_end_iteration, **kwargs)
+        kwargs.pop(BATCH)
 
         if self.lr_scheduler is not None:
             if not self.scheduler_iter:
@@ -450,8 +447,7 @@ class Trainer(ABC, _DistributedMixin):
         else:
             raise NotImplementedError
 
-        arguments = inspect.BoundArguments(inspect.signature(self.evaluate), kwargs)
-        self.evaluate(**arguments.kwargs)
+        _execute(self.evaluate, **kwargs)
 
     def on_before_training(self, **kwargs) -> Union[None, Dict]:
         pass
@@ -590,11 +586,11 @@ class Evaluator(ABC, _DistributedMixin):
 
         if self.distributed:
             if self.process_index == 0:
-                ckpt = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
+                ckpt = mon.load(checkpoint, method=pkl_method,
                                 version=version, map_location='cpu')
                 self.load_state_dict(ckpt)
         else:
-            ckpt = mon.load(CONSTANTS.CHECKPOINT, method=CONSTANTS.PKL_METHOD,
+            ckpt = mon.load(checkpoint, method=pkl_method,
                             version=version, map_location=map_location)
             self.load_state_dict(ckpt)
 
@@ -629,7 +625,7 @@ class Evaluator(ABC, _DistributedMixin):
             raise NotImplementedError
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
-        pretrained = state_dict[CONSTANTS.MODEL_DICT]
+        pretrained = state_dict[model_dict]
         if isinstance(self._nets, T.nn.Module):
             if isinstance(pretrained, dict):
                 self._nets.load_state_dict(pretrained)
@@ -654,20 +650,20 @@ class Evaluator(ABC, _DistributedMixin):
             else:
                 raise NotImplementedError
 
-        if self.fp16 and CONSTANTS.AMP in state_dict:
+        if self.fp16 and AMP in state_dict:
             try:
                 from apex import amp
             except ModuleNotFoundError:
                 print('Cannot import apex. To use fp16, NVIDIA apex must be installed')
                 raise
 
-            amp.load_state_dict(state_dict[CONSTANTS.AMP])
+            amp.load_state_dict(state_dict[AMP])
 
         if self.ema is not None:
             try:
-                ema_sd = state_dict[CONSTANTS.EMA_DICT]
+                ema_sd = state_dict[ema_dict]
             except KeyError:  # try legacy load
-                ema_sd = mon.load(CONSTANTS.EMA_CHECKPOINT, method=CONSTANTS.PKL_METHOD, version=self.version)
+                ema_sd = mon.load(ema_checkpoint, method=pkl_method, version=self.version)
 
             if isinstance(self.ema, (list, tuple)):
                 assert isinstance(ema_sd, (list, tuple))
