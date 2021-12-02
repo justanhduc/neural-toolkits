@@ -12,7 +12,9 @@ from abc import ABC
 import abc
 from typing import List, Union, Any, Callable, Dict
 
-__all__ = ['Trainer', 'Evaluator']
+__all__ = ['Trainer', 'Evaluator', 'on_before_training', 'on_after_training',
+           'on_begin_epoch', 'on_end_epoch', 'on_end_iteration', 'on_begin_iteration']
+
 
 model_dict = 'model_dict'
 optim_dict = 'optim_dict'
@@ -27,14 +29,47 @@ pkl_method = 'torch'
 custom_dict = 'custom_dict'
 BATCH = 'batch'
 
+_on_before_training = []
+_on_after_training = []
+_on_begin_epoch = []
+_on_end_epoch = []
+_on_begin_iteration = []
+_on_end_iteration = []
 
-def _execute(fn: Callable, **kwargs) -> Dict:
+
+def on_before_training(fn):
+    _on_before_training.append(fn.__name__)
+    return fn
+
+
+def on_after_training(fn):
+    _on_after_training.append(fn.__name__)
+    return fn
+
+
+def on_begin_epoch(fn):
+    _on_begin_epoch.append(fn.__name__)
+    return fn
+
+
+def on_end_epoch(fn):
+    _on_end_epoch.append(fn.__name__)
+    return fn
+
+
+def on_begin_iteration(fn):
+    _on_begin_iteration.append(fn.__name__)
+    return fn
+
+
+def on_end_iteration(fn):
+    _on_end_iteration.append(fn.__name__)
+    return fn
+
+
+def _execute(fn: Callable, **kwargs) -> None:
     args = inspect.BoundArguments(inspect.signature(fn), kwargs)
-    res: Union[Dict, None] = fn(*args.args, **args.kwargs)
-    if res is not None:
-        kwargs.update(res)
-
-    return kwargs
+    fn(*args.args, **args.kwargs)
 
 
 def convert_sync_batchnorm(model: Union[T.nn.Module, List[T.nn.Module]]):
@@ -47,6 +82,17 @@ def convert_sync_batchnorm(model: Union[T.nn.Module, List[T.nn.Module]]):
         raise NotImplementedError
 
     return model
+
+
+class DefaultContext:
+    def __setattr__(self, key, value):
+        super(DefaultContext, self).__setattr__(key, value)
+
+    def __getattr__(self, item):
+        try:
+            return super(DefaultContext, self).__getattr__(item)
+        except AttributeError:
+            return None
 
 
 class _DistributedMixin:
@@ -132,6 +178,7 @@ class Trainer(ABC, _DistributedMixin):
         self.version = version
         self.num_latest_checkpoints = num_latest_checkpoints
         self.states = {}
+        self.ctx = DefaultContext()
 
         if self.distributed:
             self._initialize_distributed_mode()
@@ -264,10 +311,9 @@ class Trainer(ABC, _DistributedMixin):
                     self.mon.print_module_summary(net_, sample_inputs_)
 
         for k, v in kwargs.items():
-            if not hasattr(self, k):
-                if isinstance(v, (T.Tensor, T.nn.Module)):
-                    v = v.to(self.device)
-                setattr(self, k, v)
+            if isinstance(v, (T.Tensor, T.nn.Module)):
+                v = v.to(self.device)
+            setattr(self.ctx, k, v)
 
     @abc.abstractmethod
     def learn(self, batch, **kwargs) -> Union[None, Dict]:
@@ -409,10 +455,10 @@ class Trainer(ABC, _DistributedMixin):
             else:
                 raise NotImplementedError
 
-            kwargs = _execute(self.on_begin_iteration, **kwargs)
+            self._execute_callbacks(_on_begin_iteration, **kwargs)
             batch = ntk.utils.batch_to_device(batch)
             kwargs[BATCH] = batch
-            kwargs = _execute(self.learn, **kwargs)
+            _execute(self.learn, **kwargs)
             if self.ema is not None and self.process_index == 0:
                 if isinstance(self.ema, (list, tuple)):
                     for ema in self.ema:
@@ -428,7 +474,8 @@ class Trainer(ABC, _DistributedMixin):
                 if mon.iter % self.val_freq == 0:
                     self.eval_step(**kwargs)
 
-            kwargs = _execute(self.on_end_iteration, **kwargs)
+            self._execute_callbacks(_on_end_iteration, **kwargs)
+
         kwargs.pop(BATCH)
 
         if self.lr_scheduler is not None:
@@ -437,6 +484,10 @@ class Trainer(ABC, _DistributedMixin):
 
         if self.process_index == 0:
             self._dump_states()
+
+    def _execute_callbacks(self, fn_list: List, **kwargs) -> None:
+        for fn in fn_list:
+            _execute(getattr(self, fn), **kwargs)
 
     def eval_step(self, **kwargs):
         if isinstance(self._nets, T.nn.Module):
@@ -449,32 +500,14 @@ class Trainer(ABC, _DistributedMixin):
 
         _execute(self.evaluate, **kwargs)
 
-    def on_before_training(self, **kwargs) -> Union[None, Dict]:
-        pass
-
-    def on_after_training(self, **kwargs) -> Union[None, Dict]:
-        pass
-
-    def on_begin_epoch(self, **kwargs) -> Union[None, Dict]:
-        pass
-
-    def on_end_epoch(self, **kwargs) -> Union[None, Dict]:
-        pass
-
-    def on_begin_iteration(self, **kwargs) -> Union[None, Dict]:
-        pass
-
-    def on_end_iteration(self, **kwargs) -> Union[None, Dict]:
-        pass
-
     def run_training(self, **kwargs):
-        kwargs = _execute(self.on_before_training, **kwargs)
+        self._execute_callbacks(_on_before_training, **kwargs)
         for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
-            kwargs = _execute(self.on_begin_epoch, **kwargs)
+            self._execute_callbacks(_on_begin_epoch, **kwargs)
             self.train_step(**kwargs)
-            kwargs = _execute(self.on_end_epoch, **kwargs)
+            self._execute_callbacks(_on_end_epoch, **kwargs)
 
-        _execute(self.on_after_training, **kwargs)
+        self._execute_callbacks(_on_after_training, **kwargs)
         self.destroy()
 
 
@@ -509,6 +542,7 @@ class Evaluator(ABC, _DistributedMixin):
         self._nets_ddp = nets
         self.ema = ema
         self.version = version
+        self.ctx = DefaultContext()
 
         if self.distributed:
             self._initialize_distributed_mode()
@@ -609,12 +643,6 @@ class Evaluator(ABC, _DistributedMixin):
             self.nets = amp.initialize(list(self.nets) if not isinstance(self.nets, T.nn.Module) else self.nets,
                                        opt_level=amp_opt_level)
 
-        for k, v in kwargs.items():
-            if not hasattr(self, k):
-                if isinstance(v, (T.Tensor, T.nn.Module)):
-                    v = v.to(self.device)
-                setattr(self, k, v)
-
         if isinstance(self.nets, T.nn.Module):
             self.nets.eval()
         elif isinstance(self.nets, (list, tuple)):
@@ -623,6 +651,11 @@ class Evaluator(ABC, _DistributedMixin):
                     net_.eval()
         else:
             raise NotImplementedError
+
+        for k, v in kwargs.items():
+            if isinstance(v, (T.Tensor, T.nn.Module)):
+                v = v.to(self.device)
+            setattr(self.ctx, k, v)
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
         pretrained = state_dict[model_dict]
