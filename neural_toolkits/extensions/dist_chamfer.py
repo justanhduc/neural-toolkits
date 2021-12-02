@@ -1,6 +1,6 @@
 from torch import nn
 from torch.autograd import Function
-import neuralnet_pytorch.ext as ext
+import neural_toolkits.ext as ext
 
 __all__ = ['chamfer_distance']
 

@@ -1,4 +1,4 @@
-import neuralnet_pytorch.ext as ext
+import neural_toolkits.ext as ext
 
 __all__ = ['pc2vox']
 
