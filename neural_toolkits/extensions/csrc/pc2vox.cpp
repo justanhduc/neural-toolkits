@@ -28,7 +28,7 @@ pointcloud_to_voxel_forward(torch::Tensor pc, int voxel_size, float grid_size,
     valid =
       at::all(at::__and__(at::ge(pc, -half_size), at::le(pc, half_size)), 2);
     valid = valid.flatten();
-    indices = indices.index(valid);
+    indices = indices.index({valid});
   }
 
   std::vector<int64_t> output_shape{ b, voxel_size, voxel_size, voxel_size };
@@ -42,7 +42,7 @@ pointcloud_to_voxel_forward(torch::Tensor pc, int voxel_size, float grid_size,
           rr[k].slice(2, 0, 1) * rr[j].slice(2, 1, 2) * rr[i].slice(2, 2, 3);
         updates = updates.flatten();
         if (filter_outlier)
-          updates = updates.index(valid);
+          updates = updates.index({valid});
 
         std::vector<int64_t> shift{ 0, k, j, i };
         at::Tensor indices_shift = torch::tensor(shift)
