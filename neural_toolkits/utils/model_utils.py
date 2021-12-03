@@ -1,7 +1,7 @@
 """
 Stolen from https://github.com/fadel/pytorch_ema
 """
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Union
 import weakref
 import copy
 import contextlib
@@ -13,6 +13,9 @@ __all__ = ['ModelEMA']
 
 # Partially based on:
 # https://github.com/tensorflow/tensorflow/blob/r1.13/tensorflow/python/training/moving_averages.py
+import torch.nn
+
+
 class ModelEMA:
     """
     Maintains (exponential) moving average of a set of parameters.
@@ -27,14 +30,16 @@ class ModelEMA:
         self,
         parameters: Iterable[torch.nn.Parameter],
         decay: float,
-        use_num_updates: bool = True
+        use_num_updates: bool = True,
+        device: Union[None, str, int, torch.device] = None
     ):
         if decay < 0.0 or decay > 1.0:
             raise ValueError('Decay must be between 0 and 1')
         self.decay = decay
         self.num_updates = 0 if use_num_updates else None
+        self.device = 'cpu' if device is None else device
         parameters = list(parameters)
-        self.shadow_params = [p.clone().detach()
+        self.shadow_params = [p.clone().detach().to(self.device)
                               for p in parameters if p.requires_grad]
         self.collected_params = None
         # By maintaining only a weakref to each parameter,
@@ -94,7 +99,7 @@ class ModelEMA:
             )
         one_minus_decay = 1.0 - decay
         with torch.no_grad():
-            parameters = [p for p in parameters if p.requires_grad]
+            parameters = [p.detach().to(self.device) for p in parameters if p.requires_grad]
             for s_param, param in zip(self.shadow_params, parameters):
                 tmp = (s_param - param)
                 # tmp will be a new tensor so we can do in-place
@@ -131,7 +136,7 @@ class ModelEMA:
         """
         parameters = self._get_parameters(parameters)
         self.collected_params = [
-            param.clone()
+            param.clone().to(self.device)
             for param in parameters
             if param.requires_grad
         ]
@@ -190,7 +195,7 @@ class ModelEMA:
         finally:
             self.restore(parameters)
 
-    def to(self, device=None, dtype=None) -> None:
+    def to(self, device=None, dtype=None):
         r"""Move internal buffers of the ExponentialMovingAverage to `device`.
         Args:
             device: like `device` argument to `torch.Tensor.to`
@@ -209,6 +214,8 @@ class ModelEMA:
                 else p.to(device=device)
                 for p in self.collected_params
             ]
+
+        self.device = device
         return self
 
     def state_dict(self) -> dict:
@@ -276,3 +283,5 @@ class ModelEMA:
                 "Tried to `load_state_dict()` with the wrong number of "
                 "parameters in the saved state."
             )
+
+        self.to(self.device)
