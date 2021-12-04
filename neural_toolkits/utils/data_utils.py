@@ -3,9 +3,8 @@ import torch as T
 import threading
 from queue import Queue
 from scipy.stats import truncnorm
-from collections.abc import Iterable
 
-from . import root_logger
+# from . import root_logger
 
 __all__ = ['DataLoader', 'DataPrefetcher', 'truncated_normal', 'batch_set_value', 'bulk_to_cuda', 'bulk_to_cuda_sparse',
            'bulk_to_numpy', 'to_cuda', 'to_cuda_sparse', 'to_numpy', 'batch_to_device', 'batch_to_cuda',
@@ -477,7 +476,7 @@ def to_cuda_sparse(coo, non_blocking=False):
     """
     Moves a sparse matrix to cuda tensor.
 
-    :param x:
+    :param coo:
         a :class:`scipy.sparse.coo.coo_matrix`.
     :return:
         a :class:`torch.Tensor`.
@@ -522,7 +521,7 @@ def bulk_to_cuda_sparse(xs, non_blocking=False):
     """
     Moves a list sparse matrices to cuda tensor.
 
-    :param x:
+    :param xs:
         a list/tuple of :class:`scipy.sparse.coo.coo_matrix`.
     :return:
         a :class:`torch.Tensor`.
@@ -533,7 +532,7 @@ def bulk_to_cuda_sparse(xs, non_blocking=False):
 
 def batch_to_device(batch, *args, **kwargs):
     """
-    Moves a batch to the specified device.
+    Moves a batch of heterogeneous objects to the specified device.
 
     :param batch:
         a :class:`torch.Tensor` or an iterable of :class:`torch.Tensor`.
@@ -543,8 +542,12 @@ def batch_to_device(batch, *args, **kwargs):
 
     if isinstance(batch, T.Tensor) or hasattr(batch, 'to'):
         batch_device = batch.to(*args, **kwargs)
-    elif isinstance(batch, Iterable):
+    elif isinstance(batch, (list, tuple)):
         batch_device = [batch_to_device(b, *args, **kwargs) for b in batch]
+    elif isinstance(batch, dict):
+        batch_device = batch
+        for k, v in batch.items():
+            batch_device[k] = batch_to_device(batch_device[k], *args, **kwargs)
     else:
         batch_device = batch
 
@@ -553,7 +556,7 @@ def batch_to_device(batch, *args, **kwargs):
 
 def batch_to_cuda(batch, *args, **kwargs):
     """
-    Moves a batch to the default CUDA device.
+    Moves a batch of heterogeneous objects to the default CUDA device.
 
     :param batch:
         a :class:`torch.Tensor` or an iterable of :class:`torch.Tensor`.
