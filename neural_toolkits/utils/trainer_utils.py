@@ -12,7 +12,7 @@ from abc import ABC
 import abc
 from typing import List, Union, Any, Callable, Dict
 
-__all__ = ['Trainer', 'Evaluator', 'on_before_training', 'on_after_training',
+__all__ = ['Trainer', 'Evaluator', 'on_before_training', 'on_after_training', 'on_before_test', 'on_after_test',
            'on_begin_epoch', 'on_end_epoch', 'on_end_iteration', 'on_begin_iteration']
 
 
@@ -35,6 +35,8 @@ _on_begin_epoch = []
 _on_end_epoch = []
 _on_begin_iteration = []
 _on_end_iteration = []
+_on_before_test = []
+_on_after_test = []
 
 
 def on_before_training(fn):
@@ -67,6 +69,16 @@ def on_end_iteration(fn):
     return fn
 
 
+def on_before_test(fn):
+    _on_before_test.append(fn.__name__)
+    return fn
+
+
+def on_after_test(fn):
+    _on_after_test.append(fn.__name__)
+    return fn
+
+
 def _execute(fn: Callable, **kwargs) -> None:
     args = inspect.BoundArguments(inspect.signature(fn), kwargs)
     fn(*args.args, **args.kwargs)
@@ -95,7 +107,7 @@ class DefaultContext:
             return None
 
 
-class _DistributedMixin:
+class _Mixin:
     def _initialize_distributed_mode(self):
         self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
         self.world_size = int(os.environ.get('WORLD_SIZE', -1))
@@ -112,8 +124,12 @@ class _DistributedMixin:
             dist.barrier()
             dist.destroy_process_group()
 
+    def _execute_callbacks(self, fn_list: List, **kwargs) -> None:
+        for fn in fn_list:
+            _execute(getattr(self, fn), **kwargs)
 
-class Trainer(ABC, _DistributedMixin):
+
+class Trainer(ABC, _Mixin):
     def __init__(self,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
                  optimizers: Union[T.optim.Optimizer, List[T.optim.Optimizer]],
@@ -484,10 +500,6 @@ class Trainer(ABC, _DistributedMixin):
         if self.process_index == 0:
             self._dump_states()
 
-    def _execute_callbacks(self, fn_list: List, **kwargs) -> None:
-        for fn in fn_list:
-            _execute(getattr(self, fn), **kwargs)
-
     def eval_step(self, **kwargs):
         if isinstance(self._nets, T.nn.Module):
             self.nets.eval()
@@ -513,7 +525,7 @@ class Trainer(ABC, _DistributedMixin):
         self.destroy()
 
 
-class Evaluator(_DistributedMixin):
+class Evaluator(_Mixin):
     def __init__(self,
                  checkpoint: str,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
@@ -740,6 +752,8 @@ class Evaluator(_DistributedMixin):
     def run_evaluation(self, **kwargs):
         with T.jit.optimized_execution(self.jit):
             with T.no_grad():
+                self._execute_callbacks(_on_before_test, **kwargs)
                 self.evaluate(**kwargs)
+                self._execute_callbacks(_on_after_test, **kwargs)
 
         self.destroy()
