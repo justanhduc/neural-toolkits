@@ -22,7 +22,7 @@ epoch = 'epoch'
 iteration = 'iteration'
 AMP = 'amp'
 lr_sched_dict = 'lr_sched_dict'
-checkpoint = 'checkpoint.pt'
+ckpt = 'checkpoint.pt'
 ema_checkpoint = 'ema.pt'
 ema_dict = 'ema_dict'
 pkl_method = 'torch'
@@ -119,13 +119,10 @@ class Trainer(ABC, _DistributedMixin):
                  optimizers: Union[T.optim.Optimizer, List[T.optim.Optimizer]],
                  batch_size: int,
                  train_set: T.utils.data.Dataset,
-                 sampler: T.utils.data.Sampler = None,
-                 collate_fn: Callable = None,
+                 train_loader_kwargs: Dict = None,
                  prefetcher: bool = False,
                  val_set: T.utils.data.Dataset = None,
-                 val_sampler: T.utils.data.Sampler = None,
-                 val_collate_fn: Callable = None,
-                 val_batch_size: int = None,
+                 val_loader_kwargs: Dict = None,
                  lr_scheduler: T.optim.lr_scheduler._LRScheduler = None,
                  scheduler_iter: bool = False,
                  ema: Union[None, T.nn.Module, List[T.nn.Module]] = None,
@@ -133,18 +130,16 @@ class Trainer(ABC, _DistributedMixin):
                  ema_decay_discount: bool = True,
                  num_epochs: int = None,
                  val_freq: int = None,
-                 num_workers: int = 8,
                  device: Union[int, str] = 'cpu',
                  distributed: bool = False,
                  master_port: str = '34562',
+                 jit: bool = False,
                  fp16: bool = False,
-                 sample_inputs: List[Any] = None,
+                 sample_inputs: Union[Any, List[Any]] = None,
                  model_name: str = None,
                  output_root: str = None,
+                 monitor_kwargs: Dict = None,
                  num_latest_checkpoints: int = -1,
-                 backup: Union[str, List[str]] = None,
-                 excludes: Union[str, List[str]] = None,
-                 includes: Union[str, List[str]] = None,
                  checkpoint: str = None,
                  version: int = -1,
                  **kwargs):
@@ -155,7 +150,6 @@ class Trainer(ABC, _DistributedMixin):
         self.val_set = val_set
         self.num_epochs = num_epochs
         self.batch_size = batch_size
-        self.val_batch_size = val_batch_size
         self.val_freq = val_freq
         self.kwargs = kwargs
         self.process_index = 0
@@ -163,17 +157,18 @@ class Trainer(ABC, _DistributedMixin):
         self.master_port = master_port
         self.device = 'cpu' if self.distributed else device
         self.fp16 = fp16
-        self.sampler = sampler
-        self.collate_fn = collate_fn
-        self.val_sampler = val_sampler
-        self.val_collate_fn = val_collate_fn
+        self.jit = jit
+        self.train_loader_kwargs = {} if train_loader_kwargs is None else train_loader_kwargs
+        self.val_loader_kwargs = {} if val_loader_kwargs is None else val_loader_kwargs
         self.lr_scheduler = lr_scheduler
         self.scheduler_iter = scheduler_iter
         self.nets = None
+        self.nets_eval = None  # for jit
         self._nets_ddp = nets
         self.ema = ema
         self.ema_decay = ema_decay
         self.ema_decay_discount = ema_decay_discount
+        self.monitor_kwargs = monitor_kwargs if monitor_kwargs is not None else {}
         self.checkpoint = checkpoint
         self.version = version
         self.num_latest_checkpoints = num_latest_checkpoints
@@ -209,6 +204,14 @@ class Trainer(ABC, _DistributedMixin):
             else:
                 raise NotImplementedError
 
+        if jit:
+            assert sample_inputs is not None, '`sample_inputs` must be provided for jit tracing.'
+            sample_inputs = ntk.utils.batch_to_device(sample_inputs, self.device)
+            self._nets.train(True)
+            self.nets = T.jit.trace(self._nets, sample_inputs)
+            self._nets.eval()
+            self.nets_eval = T.jit.trace(self._nets, sample_inputs)
+
         if self.ema is not None:
             if isinstance(self.ema, T.nn.Module):
                 self.ema = ntk.utils.ModelEMA(self.ema.parameters(), decay=self.ema_decay,
@@ -222,20 +225,15 @@ class Trainer(ABC, _DistributedMixin):
         else:
             self.ema = None
 
-        if sampler is None:
+        if self.train_loader_kwargs.get('sampler', None) is None:
             if self.distributed:
-                self.sampler = T.utils.data.distributed.DistributedSampler(self.train_set)
+                self.train_loader_kwargs['sampler'] = T.utils.data.distributed.DistributedSampler(self.train_set)
 
-        args = inspect.BoundArguments(inspect.signature(DataLoader), kwargs)
         self.train_loader = DataLoader(
             self.train_set,
             batch_size=batch_size,
-            shuffle=True if self.sampler is None else False,
-            sampler=self.sampler,
-            collate_fn=collate_fn,
-            num_workers=num_workers,
-            pin_memory=True,
-            **args.kwargs
+            shuffle=True if self.train_loader_kwargs.get('sampler', None) is None else False,
+            **self.train_loader_kwargs
         )
         if self.prefetcher:
             if self.device == 'cpu':
@@ -245,19 +243,18 @@ class Trainer(ABC, _DistributedMixin):
 
         self.val_loader = None
         if val_set is not None:
-            if val_sampler is None:
+            if self.val_loader_kwargs.get('sampler', None) is None:
                 if distributed:
-                    self.val_sampler = T.utils.data.distributed.DistributedSampler(self.val_set, shuffle=False)
+                    self.val_loader_kwargs['sampler'] = \
+                        T.utils.data.distributed.DistributedSampler(self.val_set, shuffle=False)
+
+            if self.val_loader_kwargs.get('batch_size', None) is None:
+                self.val_loader_kwargs['batch_size'] = batch_size
 
             self.val_loader = DataLoader(
                 self.val_set,
-                batch_size=batch_size if val_batch_size is None else val_batch_size,
                 shuffle=False,
-                sampler=self.val_sampler,
-                collate_fn=val_collate_fn,
-                num_workers=num_workers,
-                pin_memory=True,
-                **args.kwargs
+                **self.val_loader_kwargs
             )
             if self.prefetcher:
                 if self.device == 'cpu':
@@ -267,7 +264,7 @@ class Trainer(ABC, _DistributedMixin):
 
         self.mon = mon
         self.logger = logger
-        args = inspect.BoundArguments(inspect.signature(self.mon.initialize), kwargs)
+        args = inspect.BoundArguments(inspect.signature(self.mon.initialize), self.monitor_kwargs)
         if self.checkpoint is None:
             self.mon.initialize(model_name, output_root, **args.kwargs)
         else:
@@ -284,8 +281,10 @@ class Trainer(ABC, _DistributedMixin):
                                   version=version, map_location=map_location)
             self.load_state_dict(ckpt)
 
-        if backup is not None:
-            self.mon.backup(backup, ignores=excludes, includes=includes)
+        if self.monitor_kwargs.get('backup', None) is not None:
+            self.mon.backup(self.monitor_kwargs.get('backup'),
+                            ignores=self.monitor_kwargs.get('ignores', None),
+                            includes=self.monitor_kwargs.get('includes', None))
 
         if fp16:
             try:
@@ -317,7 +316,7 @@ class Trainer(ABC, _DistributedMixin):
 
     @abc.abstractmethod
     def learn(self, batch, **kwargs) -> Union[None, Dict]:
-        raise NotImplementedError
+        pass
 
     def evaluate(self, **kwargs) -> Union[None, Dict]:
         pass
@@ -421,7 +420,7 @@ class Trainer(ABC, _DistributedMixin):
 
     def _dump_states(self):
         states = self.state_dict()
-        mon.dump(checkpoint, states, method=pkl_method, keep=self.num_latest_checkpoints)
+        mon.dump(ckpt, states, method=pkl_method, keep=self.num_latest_checkpoints)
 
     def update_model(self, loss: T.Tensor, optimizer: T.optim.Optimizer, **kwargs):
         """
@@ -456,7 +455,7 @@ class Trainer(ABC, _DistributedMixin):
                 raise NotImplementedError
 
             self._execute_callbacks(_on_begin_iteration, **kwargs)
-            batch = ntk.utils.batch_to_device(batch)
+            batch = ntk.utils.batch_to_device(batch, device=self.device)
             kwargs[BATCH] = batch
             _execute(self.learn, **kwargs)
             if self.ema is not None and self.process_index == 0:
@@ -501,22 +500,25 @@ class Trainer(ABC, _DistributedMixin):
         _execute(self.evaluate, **kwargs)
 
     def run_training(self, **kwargs):
-        self._execute_callbacks(_on_before_training, **kwargs)
-        for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
-            self._execute_callbacks(_on_begin_epoch, **kwargs)
-            self.train_step(**kwargs)
-            self._execute_callbacks(_on_end_epoch, **kwargs)
+        logger.info('Training starts...')
+        with T.jit.optimized_execution(self.jit):
+            self._execute_callbacks(_on_before_training, **kwargs)
+            for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
+                self._execute_callbacks(_on_begin_epoch, **kwargs)
+                self.train_step(**kwargs)
+                self._execute_callbacks(_on_end_epoch, **kwargs)
 
-        self._execute_callbacks(_on_after_training, **kwargs)
+            self._execute_callbacks(_on_after_training, **kwargs)
+        logger.info('Training finished')
         self.destroy()
 
 
-class Evaluator(ABC, _DistributedMixin):
+class Evaluator(_DistributedMixin):
     def __init__(self,
                  checkpoint: str,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
-                 batch_size: int,
-                 val_set: T.utils.data.Dataset = None,
+                 test_set: T.utils.data.Dataset = None,
+                 loader_kwargs: Dict = None,
                  prefetcher: bool = False,
                  ema: Union[T.nn.Module, List[T.nn.Module]] = None,
                  num_workers: int = 8,
@@ -525,12 +527,15 @@ class Evaluator(ABC, _DistributedMixin):
                  master_port: str = '34562',
                  distributed_training: bool = False,
                  fp16: bool = False,
+                 jit: bool = False,
+                 sample_inputs: Union[Any, List[Any]] = None,
                  version: int = -1,
+                 monitor_kwargs: dict = None,
                  **kwargs):
         self._nets = nets
         self.prefetcher = prefetcher
-        self.val_set = val_set
-        self.batch_size = batch_size
+        self.test_set = test_set
+        self.loader_kwargs = loader_kwargs
         self.device = device
         self.kwargs = kwargs
         self.process_index = 0
@@ -538,11 +543,22 @@ class Evaluator(ABC, _DistributedMixin):
         self.master_port = master_port
         self.distributed_training = distributed_training
         self.fp16 = fp16
+        self.jit = jit
         self.nets = None
         self._nets_ddp = nets
         self.ema = ema
         self.version = version
+        self.monitor_kwargs = monitor_kwargs
         self.ctx = DefaultContext()
+
+        if isinstance(self._nets, T.nn.Module):
+            self._nets.eval()
+        elif isinstance(self._nets, (list, tuple)):
+            for net_ in self._nets:
+                if net_ is not None:
+                    net_.eval()
+        else:
+            raise NotImplementedError
 
         if self.distributed:
             self._initialize_distributed_mode()
@@ -575,6 +591,11 @@ class Evaluator(ABC, _DistributedMixin):
             else:
                 raise NotImplementedError
 
+        if jit:
+            assert sample_inputs is not None, '`sample_inputs` must be provided for jit tracing.'
+            sample_inputs = ntk.utils.batch_to_device(sample_inputs, self.device)
+            self.nets = T.jit.trace(self._nets, sample_inputs)
+
         if self.ema is not None:
             if isinstance(self.ema, T.nn.Module):
                 self.ema = ntk.utils.ModelEMA(self.ema.parameters(), decay=.999)
@@ -586,25 +607,24 @@ class Evaluator(ABC, _DistributedMixin):
         else:
             self.ema = None
 
-        self.val_loader = None
-        if val_set is not None:
-            self.val_loader = DataLoader(
-                self.val_set,
-                batch_size=batch_size,
+        self.test_loader = None
+        if test_set is not None:
+            self.test_loader = DataLoader(
+                self.test_set,
                 shuffle=False,
                 num_workers=num_workers,
-                pin_memory=True
+                pin_memory=True,
+                **loader_kwargs
             )
             if self.prefetcher:
                 if self.device == 'cpu':
                     raise ValueError('Cannot use prefetcher on CPU')
 
-                self.val_loader = ntk.utils.DataPrefetcher(self.val_loader, device=self.device)
+                self.test_loader = ntk.utils.DataPrefetcher(self.test_loader, device=self.device)
 
         self.mon = mon
         self.logger = logger
-        args = inspect.BoundArguments(inspect.signature(self.mon.initialize), kwargs)
-        self.mon.initialize(current_folder=checkpoint, **args.kwargs)
+        self.mon.initialize(current_folder=checkpoint, **monitor_kwargs)
         self.mon.iter = 0
         self.mon.num_iters = None
 
@@ -620,13 +640,13 @@ class Evaluator(ABC, _DistributedMixin):
 
         if self.distributed:
             if self.process_index == 0:
-                ckpt = mon.load(checkpoint, method=pkl_method,
-                                version=version, map_location='cpu')
-                self.load_state_dict(ckpt)
+                states = mon.load(ckpt, method=pkl_method,
+                                  version=version, map_location='cpu')
+                self.load_state_dict(states)
         else:
-            ckpt = mon.load(checkpoint, method=pkl_method,
-                            version=version, map_location=map_location)
-            self.load_state_dict(ckpt)
+            states = mon.load(ckpt, method=pkl_method,
+                              version=version, map_location=map_location)
+            self.load_state_dict(states)
 
         if self.distributed_training:
             self._nets = ntk.utils.revert_sync_batchnorm(self._nets)
@@ -642,15 +662,6 @@ class Evaluator(ABC, _DistributedMixin):
             amp_opt_level = 'O1'
             self.nets = amp.initialize(list(self.nets) if not isinstance(self.nets, T.nn.Module) else self.nets,
                                        opt_level=amp_opt_level)
-
-        if isinstance(self.nets, T.nn.Module):
-            self.nets.eval()
-        elif isinstance(self.nets, (list, tuple)):
-            for net_ in self.nets:
-                if net_ is not None:
-                    net_.eval()
-        else:
-            raise NotImplementedError
 
         for k, v in kwargs.items():
             if isinstance(v, (T.Tensor, T.nn.Module)):
@@ -712,12 +723,23 @@ class Evaluator(ABC, _DistributedMixin):
                 else:
                     self.ema.load_state_dict(ema_sd)
 
-    @abc.abstractmethod
-    def evaluate(self, **kwargs):
+    def eval_step(self, batch, **kwargs):
         raise NotImplementedError
 
+    def evaluate(self, **kwargs):
+        if self.test_set is not None:
+            for batch in mon.iter_batch(self.test_loader):
+                batch = ntk.utils.batch_to_device(batch, device=self.device)
+                kwargs[BATCH] = batch
+                _execute(self.eval_step, **kwargs)
+        else:
+            raise NotImplementedError(
+                'To run evaluation, either a test set and `eval_step` have to be provided or '
+                '`evaluate` has to be implemented.')
+
     def run_evaluation(self, **kwargs):
-        with T.no_grad():
-            self.evaluate(**kwargs)
+        with T.jit.optimized_execution(self.jit):
+            with T.no_grad():
+                self.evaluate(**kwargs)
 
         self.destroy()
