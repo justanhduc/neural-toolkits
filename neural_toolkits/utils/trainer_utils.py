@@ -12,8 +12,7 @@ from abc import ABC
 import abc
 from typing import List, Union, Any, Callable, Dict
 
-__all__ = ['Trainer', 'Evaluator', 'on_before_training', 'on_after_training', 'on_before_test', 'on_after_test',
-           'on_begin_epoch', 'on_end_epoch', 'on_end_iteration', 'on_begin_iteration']
+__all__ = ['Trainer', 'Evaluator', 'Hooks']
 
 
 model_dict = 'model_dict'
@@ -29,54 +28,56 @@ pkl_method = 'torch'
 custom_dict = 'custom_dict'
 BATCH = 'batch'
 
-_on_before_training = []
-_on_after_training = []
-_on_begin_epoch = []
-_on_end_epoch = []
-_on_begin_iteration = []
-_on_end_iteration = []
-_on_before_test = []
-_on_after_test = []
 
+class Hooks:
+    _on_before_training = []
+    _on_after_training = []
+    _on_begin_epoch = []
+    _on_end_epoch = []
+    _on_begin_iteration = []
+    _on_end_iteration = []
+    _on_before_test = []
+    _on_after_test = []
 
-def on_before_training(fn):
-    _on_before_training.append(fn.__name__)
-    return fn
+    @staticmethod
+    def on_before_training(fn):
+        Hooks._on_before_training.append(fn.__name__)
+        return fn
 
+    @staticmethod
+    def on_after_training(fn):
+        Hooks._on_after_training.append(fn.__name__)
+        return fn
 
-def on_after_training(fn):
-    _on_after_training.append(fn.__name__)
-    return fn
+    @staticmethod
+    def on_begin_epoch(fn):
+        Hooks._on_begin_epoch.append(fn.__name__)
+        return fn
 
+    @staticmethod
+    def on_end_epoch(fn):
+        Hooks._on_end_epoch.append(fn.__name__)
+        return fn
 
-def on_begin_epoch(fn):
-    _on_begin_epoch.append(fn.__name__)
-    return fn
+    @staticmethod
+    def on_begin_iteration(fn):
+        Hooks._on_begin_iteration.append(fn.__name__)
+        return fn
 
+    @staticmethod
+    def on_end_iteration(fn):
+        Hooks._on_end_iteration.append(fn.__name__)
+        return fn
 
-def on_end_epoch(fn):
-    _on_end_epoch.append(fn.__name__)
-    return fn
+    @staticmethod
+    def on_before_test(fn):
+        Hooks._on_before_test.append(fn.__name__)
+        return fn
 
-
-def on_begin_iteration(fn):
-    _on_begin_iteration.append(fn.__name__)
-    return fn
-
-
-def on_end_iteration(fn):
-    _on_end_iteration.append(fn.__name__)
-    return fn
-
-
-def on_before_test(fn):
-    _on_before_test.append(fn.__name__)
-    return fn
-
-
-def on_after_test(fn):
-    _on_after_test.append(fn.__name__)
-    return fn
+    @staticmethod
+    def on_after_test(fn):
+        Hooks._on_after_test.append(fn.__name__)
+        return fn
 
 
 def _execute(fn: Callable, **kwargs) -> None:
@@ -470,7 +471,7 @@ class Trainer(ABC, _Mixin):
             else:
                 raise NotImplementedError
 
-            self._execute_callbacks(_on_begin_iteration, **kwargs)
+            self._execute_callbacks(Hooks._on_begin_iteration, **kwargs)
             batch = ntk.utils.batch_to_device(batch, device=self.device)
             kwargs[BATCH] = batch
             _execute(self.learn, **kwargs)
@@ -489,7 +490,7 @@ class Trainer(ABC, _Mixin):
                 if mon.iter % self.val_freq == 0:
                     self.eval_step(**kwargs)
 
-            self._execute_callbacks(_on_end_iteration, **kwargs)
+            self._execute_callbacks(Hooks._on_end_iteration, **kwargs)
 
         kwargs.pop(BATCH)
 
@@ -514,13 +515,13 @@ class Trainer(ABC, _Mixin):
     def run_training(self, **kwargs):
         logger.info('Training starts...')
         with T.jit.optimized_execution(self.jit):
-            self._execute_callbacks(_on_before_training, **kwargs)
+            self._execute_callbacks(Hooks._on_before_training, **kwargs)
             for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
-                self._execute_callbacks(_on_begin_epoch, **kwargs)
+                self._execute_callbacks(Hooks._on_begin_epoch, **kwargs)
                 self.train_step(**kwargs)
-                self._execute_callbacks(_on_end_epoch, **kwargs)
+                self._execute_callbacks(Hooks._on_end_epoch, **kwargs)
 
-            self._execute_callbacks(_on_after_training, **kwargs)
+            self._execute_callbacks(Hooks._on_after_training, **kwargs)
         logger.info('Training finished')
         self.destroy()
 
@@ -752,8 +753,8 @@ class Evaluator(_Mixin):
     def run_evaluation(self, **kwargs):
         with T.jit.optimized_execution(self.jit):
             with T.no_grad():
-                self._execute_callbacks(_on_before_test, **kwargs)
+                self._execute_callbacks(Hooks._on_before_test, **kwargs)
                 self.evaluate(**kwargs)
-                self._execute_callbacks(_on_after_test, **kwargs)
+                self._execute_callbacks(Hooks._on_after_test, **kwargs)
 
         self.destroy()
