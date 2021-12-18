@@ -1,7 +1,6 @@
 import math
 import torch as T
 from torch.utils.data import DataLoader
-import neural_toolkits as ntk
 from neural_monitor import monitor as mon
 from neural_monitor import logger
 from torch import distributed as dist
@@ -11,6 +10,11 @@ import inspect
 from abc import ABC
 import abc
 from typing import List, Union, Any, Callable, Dict
+
+from .tensor_utils import nan_to_num
+from .data_utils import batch_to_device, DataPrefetcher
+from .model_utils import ModelEMA
+from .layer_utils import revert_sync_batchnorm
 
 __all__ = ['Trainer', 'Evaluator', 'Hooks']
 
@@ -142,6 +146,7 @@ class Trainer(ABC, _Mixin):
                  val_loader_kwargs: Dict = None,
                  lr_scheduler: T.optim.lr_scheduler._LRScheduler = None,
                  scheduler_iter: bool = False,
+                 grad_nan_handling: bool = False,
                  ema: Union[None, T.nn.Module, List[T.nn.Module]] = None,
                  ema_decay: float = .999,
                  ema_decay_discount: bool = True,
@@ -162,6 +167,7 @@ class Trainer(ABC, _Mixin):
                  **kwargs):
         self._nets = nets
         self.optimizers = optimizers
+        self.grad_nan_handling = grad_nan_handling
         self.train_set = train_set
         self.prefetcher = prefetcher
         self.val_set = val_set
@@ -223,7 +229,7 @@ class Trainer(ABC, _Mixin):
 
         if jit:
             assert sample_inputs is not None, '`sample_inputs` must be provided for jit tracing.'
-            sample_inputs = ntk.utils.batch_to_device(sample_inputs, self.device)
+            sample_inputs = batch_to_device(sample_inputs, self.device)
             self._nets.train(True)
             self.nets = T.jit.trace(self._nets, sample_inputs)
             self._nets.eval()
@@ -231,16 +237,26 @@ class Trainer(ABC, _Mixin):
 
         if self.ema is not None:
             if isinstance(self.ema, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self.ema.parameters(), decay=self.ema_decay,
-                                              use_num_updates=self.ema_decay_discount)
+                self.ema = ModelEMA(self.ema.parameters(), decay=self.ema_decay,
+                                    use_num_updates=self.ema_decay_discount)
             elif isinstance(self.ema, (list, tuple)):
-                self.ema = [ntk.utils.ModelEMA(ema_.parameters(), decay=self.ema_decay,
-                                               use_num_updates=self.ema_decay_discount)
+                self.ema = [ModelEMA(ema_.parameters(), decay=self.ema_decay,
+                                     use_num_updates=self.ema_decay_discount)
                             for ema_ in ema]
             else:
                 raise NotImplementedError
         else:
             self.ema = None
+
+        if self.grad_nan_handling:
+            grad_hook = lambda grad: nan_to_num(grad, nan=0, posinf=1e5, neginf=-1e5)
+            if isinstance(self._nets, T.nn.Module):
+                for p in self._nets.parameters():
+                    p.register_hook(grad_hook)
+            else:
+                for net in self._nets:
+                    for p in net.parameters():
+                        p.register_hook(grad_hook)
 
         if self.train_loader_kwargs.get('sampler', None) is None:
             if self.distributed:
@@ -256,7 +272,7 @@ class Trainer(ABC, _Mixin):
             if self.device == 'cpu':
                 raise ValueError('Cannot use prefetcher on CPU')
 
-            self.train_loader = ntk.utils.DataPrefetcher(self.train_loader, device=self.device)
+            self.train_loader = DataPrefetcher(self.train_loader, device=self.device)
 
         self.val_loader = None
         if val_set is not None:
@@ -277,7 +293,7 @@ class Trainer(ABC, _Mixin):
                 if self.device == 'cpu':
                     raise ValueError('Cannot use prefetcher on CPU')
 
-                self.val_loader = ntk.utils.DataPrefetcher(self.val_loader, device=self.device)
+                self.val_loader = DataPrefetcher(self.val_loader, device=self.device)
 
         self.mon = mon
         self.logger = logger
@@ -319,7 +335,7 @@ class Trainer(ABC, _Mixin):
                                opt_level=amp_opt_level)
 
         if sample_inputs is not None:
-            sample_inputs = ntk.utils.batch_to_device(sample_inputs, self.device)
+            sample_inputs = batch_to_device(sample_inputs, self.device)
             if isinstance(self._nets, T.nn.Module):
                 self.mon.print_module_summary(self._nets, sample_inputs)
             elif isinstance(self._nets, (list, tuple)):
@@ -472,7 +488,7 @@ class Trainer(ABC, _Mixin):
                 raise NotImplementedError
 
             self._execute_callbacks(Hooks._on_begin_iteration, **kwargs)
-            batch = ntk.utils.batch_to_device(batch, device=self.device)
+            batch = batch_to_device(batch, device=self.device)
             kwargs[BATCH] = batch
             _execute(self.learn, **kwargs)
             if self.ema is not None and self.process_index == 0:
@@ -606,14 +622,14 @@ class Evaluator(_Mixin):
 
         if jit:
             assert sample_inputs is not None, '`sample_inputs` must be provided for jit tracing.'
-            sample_inputs = ntk.utils.batch_to_device(sample_inputs, self.device)
+            sample_inputs = batch_to_device(sample_inputs, self.device)
             self.nets = T.jit.trace(self._nets, sample_inputs)
 
         if self.ema is not None:
             if isinstance(self.ema, T.nn.Module):
-                self.ema = ntk.utils.ModelEMA(self.ema.parameters(), decay=.999)
+                self.ema = ModelEMA(self.ema.parameters(), decay=.999)
             elif isinstance(self.ema, (list, tuple)):
-                self.ema = [ntk.utils.ModelEMA(ema_.parameters(), decay=.999)
+                self.ema = [ModelEMA(ema_.parameters(), decay=.999)
                             for ema_ in ema]
             else:
                 raise NotImplementedError
@@ -633,7 +649,7 @@ class Evaluator(_Mixin):
                 if self.device == 'cpu':
                     raise ValueError('Cannot use prefetcher on CPU')
 
-                self.test_loader = ntk.utils.DataPrefetcher(self.test_loader, device=self.device)
+                self.test_loader = DataPrefetcher(self.test_loader, device=self.device)
 
         self.mon = mon
         self.logger = logger
@@ -662,7 +678,7 @@ class Evaluator(_Mixin):
             self.load_state_dict(states)
 
         if self.distributed_training:
-            self._nets = ntk.utils.revert_sync_batchnorm(self._nets)
+            self._nets = revert_sync_batchnorm(self._nets)
 
         if fp16:
             try:
@@ -742,7 +758,7 @@ class Evaluator(_Mixin):
     def evaluate(self, **kwargs):
         if self.test_set is not None:
             for batch in mon.iter_batch(self.test_loader):
-                batch = ntk.utils.batch_to_device(batch, device=self.device)
+                batch = batch_to_device(batch, device=self.device)
                 kwargs[BATCH] = batch
                 _execute(self.eval_step, **kwargs)
         else:

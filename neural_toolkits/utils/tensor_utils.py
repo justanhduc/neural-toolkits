@@ -9,7 +9,19 @@ from .types import List, Optional, Union
 
 __all__ = ['dimshuffle', 'shape_padleft', 'shape_padright', 'swapaxes', 'ravel_index', 'tile', 'repeat', 'block_diag',
            'block_diag_sparse', 'get_bilinear_weights', 'interpolate_bilinear', 'batch_pairwise_sqdist', 'gram_matrix',
-           'var', 'std', 'break_dim', 'moveaxes', 'moveaxis']
+           'var', 'std', 'break_dim', 'moveaxes', 'moveaxis', 'nan_to_num']
+
+try:
+    nan_to_num = T.nan_to_num  # 1.8.0a0
+except AttributeError:
+    def nan_to_num(input, nan=0.0, posinf=None, neginf=None, *, out=None): # pylint: disable=redefined-builtin
+        assert isinstance(input, T.Tensor)
+        if posinf is None:
+            posinf = T.finfo(input.dtype).max
+        if neginf is None:
+            neginf = T.finfo(input.dtype).min
+        assert nan == 0
+        return T.clamp(input.unsqueeze(0).nansum(0), min=neginf, max=posinf, out=out)
 
 
 def dimshuffle(x: T.Tensor, pattern: List):
