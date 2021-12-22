@@ -28,7 +28,7 @@ act = {
     None: linear,
     'lrelu': F.leaky_relu,
     'tanh': F.tanh,
-    'sigmoid': F.sigmoid,
+    'sigmoid': T.sigmoid,
     'elu': F.elu,
     'softmax': F.softmax,
     'selu': F.selu,
