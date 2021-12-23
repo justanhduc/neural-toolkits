@@ -310,9 +310,9 @@ class Trainer(ABC, _Mixin):
             else:
                 raise NotImplementedError
 
-            ckpt: Dict = mon.load(checkpoint, method=pkl_method,
-                                  version=version, map_location=map_location)
-            self.load_state_dict(ckpt)
+            state_dict: Dict = mon.load(ckpt, method=pkl_method,
+                                        version=version, map_location=map_location)
+            self.load_state_dict(state_dict)
 
         if self.monitor_kwargs.get('backup', None) is not None:
             self.mon.backup(self.monitor_kwargs.get('backup'),
