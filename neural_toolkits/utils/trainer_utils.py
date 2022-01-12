@@ -161,6 +161,9 @@ class Trainer(ABC, _Mixin):
                  model_name: str = None,
                  output_root: str = None,
                  monitor_kwargs: Dict = None,
+                 backup: List[str] = None,
+                 includes: List[str] = None,
+                 excludes: List[str] = None,
                  num_latest_checkpoints: int = -1,
                  checkpoint: str = None,
                  version: int = -1,
@@ -192,6 +195,9 @@ class Trainer(ABC, _Mixin):
         self.ema_decay = ema_decay
         self.ema_decay_discount = ema_decay_discount
         self.monitor_kwargs = monitor_kwargs if monitor_kwargs is not None else {}
+        self.backup = backup
+        self.excludes = excludes
+        self.includes = includes
         self.checkpoint = checkpoint
         self.version = version
         self.num_latest_checkpoints = num_latest_checkpoints
@@ -314,10 +320,8 @@ class Trainer(ABC, _Mixin):
                                         version=version, map_location=map_location)
             self.load_state_dict(state_dict)
 
-        if self.monitor_kwargs.get('backup', None) is not None:
-            self.mon.backup(self.monitor_kwargs.get('backup'),
-                            ignores=self.monitor_kwargs.get('ignores', None),
-                            includes=self.monitor_kwargs.get('includes', None))
+        if backup is not None:
+            self.mon.backup(backup, ignores=excludes, includes=includes)
 
         if fp16:
             try:
@@ -526,7 +530,8 @@ class Trainer(ABC, _Mixin):
         else:
             raise NotImplementedError
 
-        _execute(self.evaluate, **kwargs)
+        with T.no_grad():
+            _execute(self.evaluate, **kwargs)
 
     def run_training(self, **kwargs):
         logger.info('Training starts...')
