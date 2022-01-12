@@ -472,6 +472,12 @@ class Trainer(ABC, _Mixin):
             Extra arguments to `loss.backward` and `optimizer.step`.
         :return: `None`.
         """
+        if isinstance(self.optimizers, (list, tuple)):
+            for opt in self.optimizers:
+                opt.zero_grad()
+        else:
+            self.optimizers.zero_grad()
+            
         if self.fp16:
             from apex import amp
             with amp.scale_loss(loss, optimizer) as scaled_loss:
