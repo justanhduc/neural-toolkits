@@ -49,7 +49,7 @@ def first_derivative_loss(x, y, p=2):
     return lp_loss(x_grad, y_grad, p)
 
 
-def lp_loss(x, y, p=2, reduction='mean'):
+def lp_loss(x, y, p=2, reduction='mean', mask=None):
     """
     Calculates p-norm of (x - y).
 
@@ -61,6 +61,9 @@ def lp_loss(x, y, p=2, reduction='mean'):
         order of the norm.
     :param reduction:
         ``'mean'`` or ``'sum'``.
+    :param mask:
+        a 0/1 mask of the same shape as inputs
+        indicating which values should account for the loss.
     :return:
         the p-norm of (x - y).
     """
@@ -69,13 +72,20 @@ def lp_loss(x, y, p=2, reduction='mean'):
     if y.ndimension() != x.ndimension():
         raise TypeError('y should have the same shape as y_pred', ('y', y.data.type(), 'y_pred', x.data.type()))
 
-    if p == 1:
+    if p == 1 and mask is None:
         return F.l1_loss(x, y, reduction=reduction)
-    elif p == 2:
+    elif p == 2 and mask is None:
         return F.mse_loss(x, y, reduction=reduction)
-    else:
-        reduce = T.mean if reduction == 'mean' else T.sum
-        return reduce(T.abs(x - y) ** p)
+
+    reduce = T.sum if reduction == 'sum' or mask is not None else T.mean
+    if mask is None:
+        mask = 1.
+
+    loss = reduce(T.abs(x - y) ** p * mask)
+    if reduction == 'mean' and isinstance(mask, T.Tensor):
+        loss = loss / (T.sum(mask) + 1e-8)
+
+    return loss
 
 
 def chamfer_loss(xyz1, xyz2, weights=(1., 1.), reduce='mean', c_code=cuda_ext_available):
