@@ -35,7 +35,7 @@ def dimshuffle(x: T.Tensor, pattern: List):
     :param x:
         Input tensor.
     :param pattern:
-        List/tuple of int mixed with `x` for broadcastable dimensions.
+        List/tuple of int mixed with `x` or `None` for broadcastable dimensions.
     :return:
         a tensor whose shape matches `pattern`.
 
@@ -52,8 +52,8 @@ def dimshuffle(x: T.Tensor, pattern: List):
     :func:`~neuralnet_pytorch.utils.shape_padright`
     :func:`~neuralnet_pytorch.utils.swapaxes`
     """
-
     assert isinstance(pattern, (list, tuple)), 'pattern must be a list/tuple'
+    pattern = [x if x is not None else 'x' for x in pattern]
     no_expand_pattern = [x for x in pattern if x != 'x']
     y = x.permute(*no_expand_pattern)
     shape = list(y.shape)

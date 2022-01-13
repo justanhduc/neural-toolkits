@@ -42,7 +42,7 @@ except ModuleNotFoundError:
 from .layers import *
 from .metrics import *
 from . import utils
-from . import gin_nnt
+from . import gin
 
 from ._version import get_versions
 __version__ = get_versions()['version']

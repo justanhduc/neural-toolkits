@@ -27,7 +27,7 @@ try:
     config.external_configurable(apex.optimizers.FusedSGD, 'fusedsgd', module='apex.optimizers')
     config.external_configurable(apex.optimizers.FusedNovoGrad, 'fusednovograd', module='apex.optimizers')
     config.external_configurable(apex.optimizers.FusedLAMB, 'fusedlamb', module='apex.optimizers')
-    print('Apex Fused Optimizers is availble for GIN')
+    print('Apex Fused Optimizers is available for Gin')
 except ImportError:
     pass
 
