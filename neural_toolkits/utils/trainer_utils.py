@@ -268,10 +268,16 @@ class Trainer(ABC, _Mixin):
             if self.distributed:
                 self.train_loader_kwargs['sampler'] = T.utils.data.distributed.DistributedSampler(self.train_set)
 
+        if self.train_loader_kwargs.get('sampler', None) is None and \
+                self.train_loader_kwargs.get('batch_sampler', None) is None:
+            shuffle = True
+        else:
+            shuffle = False
+
         self.train_loader = DataLoader(
             self.train_set,
             batch_size=batch_size,
-            shuffle=True if self.train_loader_kwargs.get('sampler', None) is None else False,
+            shuffle=shuffle,
             **self.train_loader_kwargs
         )
         if self.prefetcher:
