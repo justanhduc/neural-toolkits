@@ -478,6 +478,10 @@ class Trainer(ABC, _Mixin):
             Extra arguments to `loss.backward` and `optimizer.step`.
         :return: `None`.
         """
+        if T.isnan(loss):
+            logger.error('Training loss is NaN!')
+            raise ValueError
+        
         if isinstance(self.optimizers, (list, tuple)):
             for opt in self.optimizers:
                 opt.zero_grad()
