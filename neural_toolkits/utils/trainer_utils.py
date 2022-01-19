@@ -465,7 +465,7 @@ class Trainer(ABC, _Mixin):
         states = self.state_dict()
         mon.dump(ckpt, states, method=pkl_method, keep=self.num_latest_checkpoints)
 
-    def update_model(self, loss: T.Tensor, optimizer: T.optim.Optimizer, **kwargs):
+    def update_model(self, loss: T.Tensor, optimizer: T.optim.Optimizer, zero_grad: bool = True, **kwargs):
         """
         Backward the loss and run one step of optimization.
         If `fp16` is used, the loss will be scaled before backward.
@@ -474,6 +474,9 @@ class Trainer(ABC, _Mixin):
             The error to be backpropagated.
         :param optimizer:
             The optimizer associated with the loss.
+        :param zero_grad:
+            Whether to zero gradients before backward.
+            Default: `True`.
         :param kwargs:
             Extra arguments to `loss.backward` and `optimizer.step`.
         :return: `None`.
@@ -481,12 +484,13 @@ class Trainer(ABC, _Mixin):
         if T.isnan(loss):
             logger.error('Training loss is NaN!')
             raise ValueError
-        
-        if isinstance(self.optimizers, (list, tuple)):
-            for opt in self.optimizers:
-                opt.zero_grad()
-        else:
-            self.optimizers.zero_grad()
+
+        if zero_grad:
+            if isinstance(self.optimizers, (list, tuple)):
+                for opt in self.optimizers:
+                    opt.zero_grad()
+            else:
+                self.optimizers.zero_grad()
             
         if self.fp16:
             from apex import amp
