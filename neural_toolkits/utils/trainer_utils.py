@@ -342,7 +342,7 @@ class Trainer(ABC, _Mixin):
 
         self.ctx = edict(batch_to_device(kwargs, self.device))
 
-    @abc.abstractmethod
+    @abstractmethod
     def learn(self, batch, **kwargs) -> Union[None, Dict]:
         pass
 
