@@ -103,6 +103,9 @@ def chamfer_loss(xyz1, xyz2, weights=(1., 1.), reduce='mean', c_code=cuda_ext_av
         a point cloud of shape (b, n2, k) or (n2, k).
     :param weights:
         weights for each distance terms.
+        Should be a tuple of two values.
+        The first value is to weight the distance from `xyz1` to the nearest points in `xyz2`.
+        The second value is for the other term.
         Default: `(1, 1)`.
     :param reduce:
         ``'mean'`` or ``'sum'``. Default: ``'mean'``.
