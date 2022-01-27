@@ -7,9 +7,9 @@ from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import os
 import inspect
-from abc import ABC
-import abc
+from abc import ABC, abstractmethod
 from typing import List, Union, Any, Callable, Dict
+from easydict import EasyDict as edict
 
 from .tensor_utils import nan_to_num
 from .data_utils import batch_to_device, DataPrefetcher
@@ -99,17 +99,6 @@ def convert_sync_batchnorm(model: Union[T.nn.Module, List[T.nn.Module]]):
         raise NotImplementedError
 
     return model
-
-
-class DefaultContext:
-    def __setattr__(self, key, value):
-        super(DefaultContext, self).__setattr__(key, value)
-
-    def __getattr__(self, item):
-        try:
-            return super(DefaultContext, self).__getattr__(item)
-        except AttributeError:
-            return None
 
 
 class _Mixin:
@@ -202,7 +191,6 @@ class Trainer(ABC, _Mixin):
         self.version = version
         self.num_latest_checkpoints = num_latest_checkpoints
         self.states = {}
-        self.ctx = DefaultContext()
 
         if self.distributed:
             self._initialize_distributed_mode()
@@ -352,10 +340,7 @@ class Trainer(ABC, _Mixin):
                 for net_, sample_inputs_ in zip(self._nets, sample_inputs):
                     self.mon.print_module_summary(net_, sample_inputs_)
 
-        for k, v in kwargs.items():
-            if isinstance(v, (T.Tensor, T.nn.Module)):
-                v = v.to(self.device)
-            setattr(self.ctx, k, v)
+        self.ctx = edict(batch_to_device(kwargs, self.device))
 
     @abc.abstractmethod
     def learn(self, batch, **kwargs) -> Union[None, Dict]:
@@ -603,7 +588,6 @@ class Evaluator(_Mixin):
         self.ema = ema
         self.version = version
         self.monitor_kwargs = monitor_kwargs
-        self.ctx = DefaultContext()
 
         if isinstance(self._nets, T.nn.Module):
             self._nets.eval()
@@ -717,10 +701,7 @@ class Evaluator(_Mixin):
             self.nets = amp.initialize(list(self.nets) if not isinstance(self.nets, T.nn.Module) else self.nets,
                                        opt_level=amp_opt_level)
 
-        for k, v in kwargs.items():
-            if isinstance(v, (T.Tensor, T.nn.Module)):
-                v = v.to(self.device)
-            setattr(self.ctx, k, v)
+        self.ctx = edict(batch_to_device(kwargs, self.device))
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
         pretrained = state_dict[model_dict]
