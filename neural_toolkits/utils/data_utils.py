@@ -542,6 +542,8 @@ def batch_to_device(batch, *args, **kwargs):
 
     if isinstance(batch, T.Tensor) or hasattr(batch, 'to'):
         batch_device = batch.to(*args, **kwargs)
+        if batch_device is None:  # some objects push data to GPUs but do not return anything
+            batch_device = batch
     elif isinstance(batch, (list, tuple)):
         batch_device = [batch_to_device(b, *args, **kwargs) for b in batch]
     elif isinstance(batch, dict):
