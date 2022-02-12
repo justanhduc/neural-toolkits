@@ -1,6 +1,7 @@
 import torch as T
 import torch.nn.functional as F
 import numpy as np
+from typing import Tuple
 
 from . import utils
 from . import cuda_ext_available
@@ -8,7 +9,7 @@ from . import cuda_ext_available
 __all__ = ['huber_loss', 'first_derivative_loss', 'lp_loss', 'ssim', 'psnr', 'chamfer_loss', 'emd_loss', 'tv_reg']
 
 
-def huber_loss(x, y, reduce='mean'):
+def huber_loss(x: T.Tensor, y: T.Tensor, reduce: str = 'mean') -> T.Tensor:
     """
     An alias for :func:`torch.nn.functional.smooth_l1_loss`.
     """
@@ -16,7 +17,7 @@ def huber_loss(x, y, reduce='mean'):
     return F.smooth_l1_loss(x, y, reduce=reduce)
 
 
-def first_derivative_loss(x, y, p=2):
+def first_derivative_loss(x: T.Tensor, y: T.Tensor, p: float = 2) -> T.Tensor:
     """
     Calculates lp loss between the first derivatives of the inputs.
 
@@ -49,7 +50,7 @@ def first_derivative_loss(x, y, p=2):
     return lp_loss(x_grad, y_grad, p)
 
 
-def lp_loss(x, y, p=2, reduction='mean', mask=None):
+def lp_loss(x: T.Tensor, y: T.Tensor, p: float = 2, reduction: str = 'mean', mask: T.Tensor = None) -> T.Tensor:
     """
     Calculates p-norm of (x - y).
 
@@ -88,7 +89,13 @@ def lp_loss(x, y, p=2, reduction='mean', mask=None):
     return loss
 
 
-def chamfer_loss(xyz1, xyz2, weights=(1., 1.), reduce='mean', c_code=cuda_ext_available):
+def chamfer_loss(
+        xyz1: T.Tensor,
+        xyz2: T.Tensor,
+        weights: Tuple[float, float] = (1., 1.),
+        reduce: str = 'mean',
+        c_code: bool = cuda_ext_available
+) -> T.Tensor:
     """
     Calculates the Chamfer distance between two batches of point clouds.
     The Pytorch code is adapted from DenseLidarNet_.
@@ -135,10 +142,10 @@ def chamfer_loss(xyz1, xyz2, weights=(1., 1.), reduce='mean', c_code=cuda_ext_av
         dist1, _ = T.min(P, 2)
     loss_2 = reduce(dist2)
     loss_1 = reduce(dist1)
-    return loss_1 * weights[0] + loss_2 * weights[1]
+    return 2. / sum(weights) * (loss_1 * weights[0] + loss_2 * weights[1])
 
 
-def emd_loss(xyz1, xyz2, reduce='mean', sinkhorn=False):
+def emd_loss(xyz1: T.Tensor, xyz2: T.Tensor, reduce: str = 'mean', sinkhorn: bool = False) -> T.Tensor:
     """
     Calculates the Earth Mover Distance (or Wasserstein metric) between two sets
     of points.
@@ -174,7 +181,16 @@ def _fspecial_gauss(size, sigma):
     return g / np.sum(g)
 
 
-def ssim(img1, img2, max_val=1., filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03, cs_map=False):
+def ssim(
+        img1: T.Tensor,
+        img2: T.Tensor,
+        max_val: float = 1.,
+        filter_size: int = 11,
+        filter_sigma: float = 1.5,
+        k1: float = 0.01,
+        k2: float = 0.03,
+        cs_map: bool = False
+) -> T.Tensor:
     """
     Returns the Structural Similarity Map between `img1` and `img2`.
     This function attempts to match the functionality of ssim_index_new.m by
@@ -198,6 +214,9 @@ def ssim(img1, img2, max_val=1., filter_size=11, filter_sigma=1.5, k1=0.01, k2=0
     :param k2:
         constant used to maintain stability in the SSIM calculation (0.03 in
         the original paper).
+    :param cs_map:
+        whether to return an error map.
+        Default: ``False``.
     :return:
         pair containing the mean SSIM and contrast sensitivity between `img1` and `img2`.
     :raise:
@@ -249,7 +268,7 @@ def ssim(img1, img2, max_val=1., filter_size=11, filter_sigma=1.5, k1=0.01, k2=0
     return output
 
 
-def psnr(x, y):
+def psnr(x: T.Tensor, y: T.Tensor) -> T.Tensor:
     """
     Peak-signal-to-noise ratio for [0,1] images.
 
@@ -262,7 +281,7 @@ def psnr(x, y):
     return -10 * T.log(T.mean((y - x) ** 2)) / np.log(10.)
 
 
-def tv_reg(y):
+def tv_reg(y: T.Tensor) -> T.Tensor:
     """
     Total variation regularization.
 
