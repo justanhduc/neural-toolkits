@@ -191,6 +191,7 @@ class Trainer(ABC, _Mixin):
         self.version = version
         self.num_latest_checkpoints = num_latest_checkpoints
         self.states = {}
+        self.outputs = edict()  # contents are cleared at the end of a training iteration and validation
 
         if self.distributed:
             self._initialize_distributed_mode()
@@ -516,6 +517,7 @@ class Trainer(ABC, _Mixin):
                     self.eval_step(**kwargs)
 
             self._execute_callbacks(Hooks._on_end_iteration, **kwargs)
+            self.outputs.clear()
 
         kwargs.pop(BATCH)
 
@@ -535,6 +537,7 @@ class Trainer(ABC, _Mixin):
         else:
             raise NotImplementedError
 
+        self.outputs.clear()
         with T.no_grad():
             _execute(self.evaluate, **kwargs)
 
