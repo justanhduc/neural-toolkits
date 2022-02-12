@@ -16,7 +16,7 @@ from .data_utils import batch_to_device, DataPrefetcher
 from .model_utils import ModelEMA
 from .layer_utils import revert_sync_batchnorm
 
-__all__ = ['Trainer', 'Evaluator', 'Hooks']
+__all__ = ['BaseTrainer', 'BaseEvaluator', 'Hooks']
 
 
 model_dict = 'model_dict'
@@ -123,7 +123,7 @@ class _Mixin:
             _execute(getattr(self, fn), **kwargs)
 
 
-class Trainer(ABC, _Mixin):
+class BaseTrainer(ABC, _Mixin):
     def __init__(self,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
                  optimizers: Union[T.optim.Optimizer, List[T.optim.Optimizer]],
@@ -555,7 +555,7 @@ class Trainer(ABC, _Mixin):
         self.destroy()
 
 
-class Evaluator(_Mixin):
+class BaseEvaluator(_Mixin):
     def __init__(self,
                  checkpoint: str,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
