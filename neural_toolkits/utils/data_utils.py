@@ -4,11 +4,11 @@ import threading
 from queue import Queue
 from scipy.stats import truncnorm
 
-# from . import root_logger
+from . import root_logger
 
 __all__ = ['DataLoader', 'DataPrefetcher', 'truncated_normal', 'batch_set_value', 'bulk_to_cuda', 'bulk_to_cuda_sparse',
            'bulk_to_numpy', 'to_cuda', 'to_cuda_sparse', 'to_numpy', 'batch_to_device', 'batch_to_cuda',
-           'batch_set_tensor', 'ReadWriteLock']
+           'batch_set_tensor', 'ReadWriteLock', 'ListCollate']
 
 
 class ReadWriteLock:
@@ -567,3 +567,34 @@ def batch_to_cuda(batch, *args, **kwargs):
     """
 
     return batch_to_device(batch, T.device('cuda'), *args, **kwargs)
+
+
+class ListCollate:
+    def __init__(self, positions):
+        self.positions = set(positions)
+
+    def __call__(self, batch):
+        batch = [b for b in zip(*batch)]
+        new_batch = []
+        for idx, b in enumerate(batch):
+            if idx in self.positions:
+                new_b = []
+                for e in b:
+                    if T.is_tensor(e):
+                        pass
+                    elif isinstance(e, np.ndarray):
+                        e = T.from_numpy(e)
+                    else:
+                        raise NotImplementedError
+                    new_b.append(e)
+                b = new_b
+            else:
+                if T.is_tensor(b[0]):
+                    b = T.stack(b)
+                elif isinstance(b[0], np.ndarray):
+                    b = T.from_numpy(np.stack(b))
+                else:
+                    raise NotImplementedError
+
+            new_batch.append(b)
+        return new_batch
