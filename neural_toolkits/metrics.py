@@ -63,8 +63,8 @@ def lp_loss(x: T.Tensor, y: T.Tensor, p: float = 2, reduction: str = 'mean', mas
     :param reduction:
         ``'mean'`` or ``'sum'``.
     :param mask:
-        a 0/1 mask of the same shape as inputs
-        indicating which values should account for the loss.
+        a mask of the same shape (or broadcasted) as inputs
+        which weights each element in the loss.
     :return:
         the p-norm of (x - y).
     """
