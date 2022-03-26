@@ -3,6 +3,7 @@ import torch as T
 import threading
 from queue import Queue
 from scipy.stats import truncnorm
+from typing import Union, List, Tuple
 
 from . import root_logger
 
@@ -569,32 +570,27 @@ def batch_to_cuda(batch, *args, **kwargs):
     return batch_to_device(batch, T.device('cuda'), *args, **kwargs)
 
 
+def to_tensor(x: Union[List, Tuple, np.ndarray, T.Tensor]):
+    if T.is_tensor(x):
+        return x
+
+    if isinstance(x, np.ndarray):
+        return T.from_numpy(x)
+
+    if isinstance(x, (list, tuple)):
+        return [to_tensor(y) for y in x]
+
+    if isinstance(x, dict):
+        return dict([(k, to_tensor(v)) for k, v in x.items()])
+
+    raise NotImplementedError
+
+
 class ListCollate:
     def __init__(self, positions):
         self.positions = set(positions)
 
     def __call__(self, batch):
         batch = [b for b in zip(*batch)]
-        new_batch = []
-        for idx, b in enumerate(batch):
-            if idx in self.positions:
-                new_b = []
-                for e in b:
-                    if T.is_tensor(e):
-                        pass
-                    elif isinstance(e, np.ndarray):
-                        e = T.from_numpy(e)
-                    else:
-                        raise NotImplementedError
-                    new_b.append(e)
-                b = new_b
-            else:
-                if T.is_tensor(b[0]):
-                    b = T.stack(b)
-                elif isinstance(b[0], np.ndarray):
-                    b = T.from_numpy(np.stack(b))
-                else:
-                    raise NotImplementedError
-
-            new_batch.append(b)
+        new_batch = [to_tensor(b) if idx in self.positions else T.stack(to_tensor(b)) for idx, b in enumerate(batch)]
         return new_batch
