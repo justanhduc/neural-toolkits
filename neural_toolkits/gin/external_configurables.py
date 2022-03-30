@@ -81,7 +81,7 @@ config.constant('int8', T.int8)
 config.constant('int16', T.int16)
 config.constant('int32', T.int32)
 config.constant('int64', T.int64)
-config.constant('complex32', T.complex32)
+# config.constant('complex32', T.complex32)  # pytorch 1.11 does not support
 config.constant('complex64', T.complex64)
 config.constant('complex128', T.complex128)
 config.constant('float', T.float)

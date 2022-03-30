@@ -1,6 +1,6 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAApplyUtils.cuh> // at::cuda::getApplyGrid
-#include <THC/THC.h>
+#include <c10/cuda/CUDAException.h>
 #include <cmath>
 #include <vector>
 
@@ -182,7 +182,7 @@ approx_match_cuda_forward(const at::Tensor xyz1, const at::Tensor xyz2)
         b, n, m, xyz1.data<scalar_t>(), xyz2.data<scalar_t>(),
         match.data<scalar_t>(), temp.data<scalar_t>());
     }));
-  THCudaCheck(cudaGetLastError());
+  C10_CUDA_CHECK(cudaGetLastError());
 
   return match;
 }
@@ -265,7 +265,7 @@ match_cost_cuda_forward(const at::Tensor xyz1, const at::Tensor xyz2,
         b, n, m, xyz1.data<scalar_t>(), xyz2.data<scalar_t>(),
         match.data<scalar_t>(), cost.data<scalar_t>());
     }));
-  THCudaCheck(cudaGetLastError());
+  C10_CUDA_CHECK(cudaGetLastError());
 
   return cost;
 }
@@ -385,7 +385,7 @@ match_cost_cuda_backward(const at::Tensor grad_cost, const at::Tensor xyz1,
         b, n, m, grad_cost.data<scalar_t>(), xyz1.data<scalar_t>(),
         xyz2.data<scalar_t>(), match.data<scalar_t>(), grad2.data<scalar_t>());
     }));
-  THCudaCheck(cudaGetLastError());
+  C10_CUDA_CHECK(cudaGetLastError());
 
   return { grad1, grad2 };
 }
