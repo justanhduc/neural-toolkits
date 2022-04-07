@@ -314,6 +314,7 @@ class BaseTrainer(ABC, _Mixin):
             state_dict: Dict = mon.load(ckpt, method=pkl_method,
                                         version=version, map_location=map_location)
             self.load_state_dict(state_dict)
+        self.mon.num_epochs = num_epochs
 
         if backup is not None:
             self.mon.backup(backup, ignores=excludes, includes=includes)
