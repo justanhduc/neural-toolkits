@@ -296,6 +296,12 @@ class BaseTrainer(ABC, _Mixin):
 
                 self.val_loader = DataPrefetcher(self.val_loader, device=self.device)
 
+        if self.lr_scheduler is not None:
+            if scheduler_iter:
+                Hooks.on_end_iteration(self.lr_scheduler.step)
+            else:
+                Hooks.on_end_epoch(self.lr_scheduler.step)
+
         self.mon = mon
         self.logger = logger
         args = inspect.BoundArguments(inspect.signature(self.mon.initialize), self.monitor_kwargs)
@@ -516,10 +522,6 @@ class BaseTrainer(ABC, _Mixin):
                 else:
                     self.ema.update()
 
-            if self.lr_scheduler is not None:
-                if self.scheduler_iter:
-                    self.lr_scheduler.step()
-
             if self.val_freq is not None:
                 if mon.iter % self.val_freq == 0:
                     self.eval_step(**kwargs)
@@ -528,11 +530,6 @@ class BaseTrainer(ABC, _Mixin):
             self.outputs.clear()
 
         kwargs.pop(BATCH)
-
-        if self.lr_scheduler is not None:
-            if not self.scheduler_iter:
-                self.lr_scheduler.step()
-
         if self.process_index == 0:
             self._dump_states()
 
