@@ -299,6 +299,14 @@ class BaseTrainer(ABC, _Mixin):
         self.mon = mon
         self.logger = logger
         args = inspect.BoundArguments(inspect.signature(self.mon.initialize), self.monitor_kwargs)
+        if args.kwargs.get('num_iters') is None:
+            num_iters = math.floor(num_epochs / batch_size) if self.train_loader_kwargs.get('drop_last') \
+                else math.ceil(num_epochs / batch_size)
+            args.kwargs['num_iters'] = num_iters
+
+        if args.kwargs.get('num_epochs') is None:
+            args.kwargs['num_epochs'] = num_epochs
+                
         if self.checkpoint is None:
             self.mon.initialize(model_name, output_root, **args.kwargs)
         else:
@@ -314,7 +322,6 @@ class BaseTrainer(ABC, _Mixin):
             state_dict: Dict = mon.load(ckpt, method=pkl_method,
                                         version=version, map_location=map_location)
             self.load_state_dict(state_dict)
-        self.mon.num_epochs = num_epochs
 
         if backup is not None:
             self.mon.backup(backup, ignores=excludes, includes=includes)
