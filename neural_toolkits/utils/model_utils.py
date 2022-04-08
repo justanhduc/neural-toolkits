@@ -38,9 +38,7 @@ class ModelEMA:
         self.decay = decay
         self.num_updates = 0 if use_num_updates else None
         self.device = 'cpu' if device is None else device
-        parameters = list(parameters)
-        self.shadow_params = [p.clone().detach().to(self.device)
-                              for p in parameters if p.requires_grad]
+        self.shadow_params = None
         self.collected_params = None
         # By maintaining only a weakref to each parameter,
         # we maintain the old GC behaviour of ExponentialMovingAverage:
@@ -48,6 +46,12 @@ class ModelEMA:
         # is kept, no references to the model or its parameters will be
         # maintained, and the model will be cleaned up.
         self._params_refs = [weakref.ref(p) for p in parameters]
+        self._initialized = False
+
+    def initialize(self):
+        if not self._initialized:
+            self.shadow_params = [p().clone().detach().to(self.device) for p in self._params_refs if p().requires_grad]
+            self._initialized = True
 
     def _get_parameters(
         self,
@@ -187,13 +191,16 @@ class ModelEMA:
                 parameters with which this `ExponentialMovingAverage` was
                 initialized will be used.
         """
-        parameters = self._get_parameters(parameters)
-        self.store(parameters)
-        self.copy_to(parameters)
+        if self._initialized:
+            parameters = self._get_parameters(parameters)
+            self.store(parameters)
+            self.copy_to(parameters)
+
         try:
             yield
         finally:
-            self.restore(parameters)
+            if self._initialized:
+                self.restore(parameters)
 
     def to(self, device=None, dtype=None):
         r"""Move internal buffers of the ExponentialMovingAverage to `device`.

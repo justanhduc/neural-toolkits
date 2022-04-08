@@ -137,6 +137,7 @@ class BaseTrainer(ABC, _Mixin):
                  scheduler_iter: bool = False,
                  grad_nan_handling: bool = False,
                  ema: Union[None, T.nn.Module, List[T.nn.Module]] = None,
+                 ema_start: int = 0,
                  ema_decay: float = .999,
                  ema_decay_discount: bool = True,
                  num_epochs: int = None,
@@ -181,6 +182,7 @@ class BaseTrainer(ABC, _Mixin):
         self.nets_eval = None  # for jit
         self._nets_ddp = nets
         self.ema = ema
+        self.ema_start = ema_start
         self.ema_decay = ema_decay
         self.ema_decay_discount = ema_decay_discount
         self.monitor_kwargs = monitor_kwargs if monitor_kwargs is not None else {}
@@ -240,8 +242,6 @@ class BaseTrainer(ABC, _Mixin):
                             for ema_ in ema]
             else:
                 raise NotImplementedError
-        else:
-            self.ema = None
 
         if self.grad_nan_handling:
             grad_hook = lambda grad: nan_to_num(grad, nan=0, posinf=1e5, neginf=-1e5)
@@ -509,7 +509,7 @@ class BaseTrainer(ABC, _Mixin):
             batch = batch_to_device(batch, device=self.device)
             kwargs[BATCH] = batch
             _execute(self.learn, **kwargs)
-            if self.ema is not None and self.process_index == 0:
+            if self.ema is not None and self.process_index == 0 and mon.epoch >= self.ema_start:
                 if isinstance(self.ema, (list, tuple)):
                     for ema in self.ema:
                         ema.update()
@@ -548,6 +548,21 @@ class BaseTrainer(ABC, _Mixin):
         self.outputs.clear()
         with T.no_grad():
             _execute(self.evaluate, **kwargs)
+
+    @Hooks.on_begin_epoch
+    def _initialize_ema(self):
+        if self.ema is None:
+            return
+
+        if self.process_index != 0:
+            return
+
+        if mon.epoch == self.ema_start:
+            if isinstance(self.ema, (list, tuple)):
+                for ema in self.ema:
+                    ema.initialize()
+            else:
+                self.ema.initialize()
 
     def run_training(self, **kwargs):
         logger.info('Training starts...')
