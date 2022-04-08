@@ -298,9 +298,9 @@ class BaseTrainer(ABC, _Mixin):
 
         if self.lr_scheduler is not None:
             if scheduler_iter:
-                Hooks.on_end_iteration(self.lr_scheduler.step)
+                Hooks.on_end_iteration(self._scheduler_step)
             else:
-                Hooks.on_end_epoch(self.lr_scheduler.step)
+                Hooks.on_end_epoch(self._scheduler_step)
 
         self.mon = mon
         self.logger = logger
@@ -356,6 +356,9 @@ class BaseTrainer(ABC, _Mixin):
                     self.mon.print_module_summary(net_, sample_inputs_)
 
         self.ctx = edict(batch_to_device(kwargs, self.device))
+
+    def _scheduler_step(self):
+        self.lr_scheduler.step()
 
     @abstractmethod
     def learn(self, batch, **kwargs) -> Union[None, Dict]:
