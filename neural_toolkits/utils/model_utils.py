@@ -292,3 +292,4 @@ class ModelEMA:
             )
 
         self.to(self.device)
+        self._initialized = True

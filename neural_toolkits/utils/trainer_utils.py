@@ -600,9 +600,8 @@ class BaseEvaluator(_Mixin):
         self._nets = nets
         self.prefetcher = prefetcher
         self.test_set = test_set
-        self.loader_kwargs = loader_kwargs
+        self.loader_kwargs = {} if loader_kwargs is None else loader_kwargs
         self.device = device
-        self.kwargs = kwargs
         self.process_index = 0
         self.distributed = distributed
         self.master_port = master_port
@@ -613,7 +612,8 @@ class BaseEvaluator(_Mixin):
         self._nets_ddp = nets
         self.ema = ema
         self.version = version
-        self.monitor_kwargs = monitor_kwargs
+        self.monitor_kwargs = monitor_kwargs if monitor_kwargs is not None else {}
+        self.kwargs = kwargs
 
         if isinstance(self._nets, T.nn.Module):
             self._nets.eval()
@@ -688,7 +688,8 @@ class BaseEvaluator(_Mixin):
 
         self.mon = mon
         self.logger = logger
-        self.mon.initialize(current_folder=checkpoint, **monitor_kwargs)
+        args = inspect.BoundArguments(inspect.signature(self.mon.initialize), self.monitor_kwargs)
+        self.mon.initialize(current_folder=checkpoint, **args.kwargs)
         self.mon.iter = 0
         self.mon.num_iters = None
 
@@ -728,6 +729,7 @@ class BaseEvaluator(_Mixin):
                                        opt_level=amp_opt_level)
 
         self.ctx = edict(batch_to_device(kwargs, self.device))
+        assert self.nets.training, 'Cannot change the model to eval mode! Exiting...'
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
         pretrained = state_dict[model_dict]
@@ -789,6 +791,13 @@ class BaseEvaluator(_Mixin):
 
     def evaluate(self, **kwargs):
         if self.test_set is not None:
+            if self.ema is not None:
+                if isinstance(self.ema, ModelEMA):
+                    self.ema.copy_to()
+                elif isinstance(self.ema, (list, tuple)):
+                    for ema in self.ema:
+                        ema.copy_to()
+
             for batch in mon.iter_batch(self.test_loader):
                 batch = batch_to_device(batch, device=self.device)
                 kwargs[BATCH] = batch
