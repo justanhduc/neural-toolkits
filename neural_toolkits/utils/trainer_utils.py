@@ -586,7 +586,6 @@ class BaseEvaluator(_Mixin):
                  loader_kwargs: Dict = None,
                  prefetcher: bool = False,
                  ema: Union[T.nn.Module, List[T.nn.Module]] = None,
-                 num_workers: int = 8,
                  device: Union[int, str] = 'cpu',
                  distributed: bool = False,
                  master_port: str = '34562',
@@ -676,7 +675,6 @@ class BaseEvaluator(_Mixin):
             self.test_loader = DataLoader(
                 self.test_set,
                 shuffle=False,
-                num_workers=num_workers,
                 pin_memory=True,
                 **loader_kwargs
             )
@@ -729,7 +727,7 @@ class BaseEvaluator(_Mixin):
                                        opt_level=amp_opt_level)
 
         self.ctx = edict(batch_to_device(kwargs, self.device))
-        assert self.nets.training, 'Cannot change the model to eval mode! Exiting...'
+        assert not self.nets.training, 'Cannot change the model to eval mode! Exiting...'
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
         pretrained = state_dict[model_dict]
