@@ -163,12 +163,9 @@ class BaseTrainer(ABC, _Mixin):
     def __init__(self,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
                  optimizers: Union[T.optim.Optimizer, List[T.optim.Optimizer]],
-                 batch_size: int,
-                 train_set: T.utils.data.Dataset,
-                 train_loader_kwargs: Dict = None,
+                 train_loader: T.utils.data.DataLoader,
                  prefetcher: bool = False,
-                 val_set: T.utils.data.Dataset = None,
-                 val_loader_kwargs: Dict = None,
+                 val_loader: T.utils.data.DataLoader = None,
                  lr_scheduler: T.optim.lr_scheduler._LRScheduler = None,
                  scheduler_iter: bool = False,
                  grad_nan_handling: bool = False,
@@ -177,7 +174,9 @@ class BaseTrainer(ABC, _Mixin):
                  ema_freq: int = 1,
                  ema_decay: float = .999,
                  ema_decay_discount: bool = True,
+                 batch_size: int = None,
                  num_epochs: int = None,
+                 num_iters_per_epoch: int = None,
                  val_freq: int = None,
                  device: Union[int, str] = 'cpu',
                  distributed: bool = False,
@@ -187,7 +186,10 @@ class BaseTrainer(ABC, _Mixin):
                  sample_inputs: Union[Any, List[Any]] = None,
                  model_name: str = None,
                  output_root: str = None,
-                 monitor_kwargs: Dict = None,
+                 print_freq: int = 50,
+                 run_prefix: str = None,
+                 use_tensorboard: bool = True,
+                 with_git: bool = False,
                  backup: List[str] = None,
                  includes: List[str] = None,
                  excludes: List[str] = None,
@@ -198,11 +200,9 @@ class BaseTrainer(ABC, _Mixin):
         self._nets = nets
         self.optimizers = optimizers
         self.grad_nan_handling = grad_nan_handling
-        self.train_set = train_set
         self.prefetcher = prefetcher
-        self.val_set = val_set
         self.num_epochs = num_epochs
-        self.batch_size = batch_size
+        self.batch_size = train_loader.batch_size if batch_size is None else batch_size
         self.val_freq = val_freq
         self.kwargs = kwargs
         self.process_index = 0
@@ -211,8 +211,6 @@ class BaseTrainer(ABC, _Mixin):
         self.device = 'cpu' if self.distributed else device
         self.fp16 = fp16
         self.jit = jit
-        self.train_loader_kwargs = {} if train_loader_kwargs is None else train_loader_kwargs
-        self.val_loader_kwargs = {} if val_loader_kwargs is None else val_loader_kwargs
         self.lr_scheduler = lr_scheduler
         self.scheduler_iter = scheduler_iter
         self.nets = None
@@ -223,7 +221,6 @@ class BaseTrainer(ABC, _Mixin):
         self.ema_freq = ema_freq
         self.ema_decay = ema_decay
         self.ema_decay_discount = ema_decay_discount
-        self.monitor_kwargs = monitor_kwargs if monitor_kwargs is not None else {}
         self.backup = backup
         self.excludes = excludes
         self.includes = includes
@@ -293,68 +290,45 @@ class BaseTrainer(ABC, _Mixin):
                     for p in net.parameters():
                         p.register_hook(grad_hook)
 
-        if self.train_loader_kwargs.get('sampler', None) is None:
-            if self.distributed:
-                self.train_loader_kwargs['sampler'] = T.utils.data.distributed.DistributedSampler(self.train_set)
-
-        if self.train_loader_kwargs.get('sampler', None) is None and \
-                self.train_loader_kwargs.get('batch_sampler', None) is None:
-            shuffle = True
-        else:
-            shuffle = False
-
-        self.train_loader = DataLoader(
-            self.train_set,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            **self.train_loader_kwargs
-        )
+        self._train_loader = train_loader
         if self.prefetcher:
             if self.device == 'cpu':
                 raise ValueError('Cannot use prefetcher on CPU')
 
-            self.train_loader = DataPrefetcher(self.train_loader, device=self.device)
+            self.train_loader = DataPrefetcher(self._train_loader, device=self.device)
+        else:
+            self.train_loader = self._train_loader
 
-        self.val_loader = None
-        if val_set is not None:
-            if self.val_loader_kwargs.get('sampler', None) is None:
-                if distributed:
-                    self.val_loader_kwargs['sampler'] = \
-                        T.utils.data.distributed.DistributedSampler(self.val_set, shuffle=False)
+        self._val_loader = val_loader
+        if val_loader is not None and self.prefetcher:
+            if self.device == 'cpu':
+                raise ValueError('Cannot use prefetcher on CPU')
 
-            if self.val_loader_kwargs.get('batch_size', None) is None:
-                self.val_loader_kwargs['batch_size'] = batch_size
-
-            self.val_loader = DataLoader(
-                self.val_set,
-                shuffle=False,
-                **self.val_loader_kwargs
-            )
-            if self.prefetcher:
-                if self.device == 'cpu':
-                    raise ValueError('Cannot use prefetcher on CPU')
-
-                self.val_loader = DataPrefetcher(self.val_loader, device=self.device)
+            self.val_loader = DataPrefetcher(self._val_loader, device=self.device)
+        else:
+            self.val_loader = self._val_loader
 
         if self.lr_scheduler is not None:
             self.as_hook(self.lr_scheduler.step, Hooks.END_ITERATION if scheduler_iter else Hooks.END_EPOCH)
 
         self.mon = mon
         self.logger = logger
-        args = inspect.BoundArguments(inspect.signature(self.mon.initialize), self.monitor_kwargs)
-        if args.kwargs.get('num_iters') is None:
-            num_iters = math.floor(num_epochs / batch_size) if self.train_loader_kwargs.get('drop_last') \
-                else math.ceil(num_epochs / batch_size)
-            args.kwargs['num_iters'] = num_iters
+        if num_iters_per_epoch is None:
+            num_iters_per_epoch = len(self._train_loader.dataset) // self.batch_size if self._train_loader.drop_last \
+                else math.ceil(len(self._train_loader.dataset) / self.batch_size)
 
-        if args.kwargs.get('num_epochs') is None:
-            args.kwargs['num_epochs'] = num_epochs
-
-        if self.checkpoint is None:
-            self.mon.initialize(model_name, output_root, **args.kwargs)
-        else:
-            self.mon.initialize(current_folder=checkpoint, **args.kwargs)
-
+        self.mon.initialize(
+            model_name=model_name,
+            root=output_root,
+            current_folder=checkpoint,
+            print_freq=print_freq,
+            num_iters=num_iters_per_epoch,
+            num_epochs=num_epochs,
+            prefix=run_prefix,
+            use_tensorboard=use_tensorboard,
+            with_git=with_git
+        )
+        if checkpoint is not None:
             if isinstance(self.device, (str, T.device)):
                 map_location = self.device
             elif isinstance(self.device, int):
@@ -362,8 +336,7 @@ class BaseTrainer(ABC, _Mixin):
             else:
                 raise NotImplementedError
 
-            state_dict: Dict = mon.load(ckpt, method=pkl_method,
-                                        version=version, map_location=map_location)
+            state_dict: Dict = mon.load(ckpt, method=pkl_method, version=version, map_location=map_location)
             self.load_state_dict(state_dict)
 
         if backup is not None:
@@ -456,7 +429,9 @@ class BaseTrainer(ABC, _Mixin):
 
     def load_state_dict(self, state_dict: dict):
         self.mon.epoch = state_dict[epoch] + 1  # ckpt is saved at the end of epoch before epoch is incremented
-        self.mon.iter = mon.epoch * math.ceil(len(self.train_set) / self.batch_size)
+        num_iters_per_epoch = len(self._train_loader.dataset) // self.batch_size if self._train_loader.drop_last \
+            else math.ceil(len(self._train_loader.dataset) / self.batch_size)
+        self.mon.iter = mon.epoch * num_iters_per_epoch
         self.mon.num_iters = None
         if custom_dict in state_dict:  # legacy load
             self.states = state_dict[custom_dict]
@@ -625,8 +600,7 @@ class BaseEvaluator(_Mixin):
     def __init__(self,
                  checkpoint: str,
                  nets: Union[T.nn.Module, List[T.nn.Module]],
-                 test_set: T.utils.data.Dataset = None,
-                 loader_kwargs: Dict = None,
+                 test_loader: T.utils.data.DataLoader = None,
                  prefetcher: bool = False,
                  ema: Union[T.nn.Module, List[T.nn.Module]] = None,
                  device: Union[int, str] = 'cpu',
@@ -637,12 +611,12 @@ class BaseEvaluator(_Mixin):
                  jit: bool = False,
                  sample_inputs: Union[Any, List[Any]] = None,
                  version: int = -1,
-                 monitor_kwargs: dict = None,
+                 print_freq: int = 1,
+                 use_tensorboard: bool = True,
+                 not_found_warn: bool = True,
                  **kwargs):
         self._nets = nets
         self.prefetcher = prefetcher
-        self.test_set = test_set
-        self.loader_kwargs = {} if loader_kwargs is None else loader_kwargs
         self.device = device
         self.process_index = 0
         self.distributed = distributed
@@ -654,7 +628,6 @@ class BaseEvaluator(_Mixin):
         self._nets_ddp = nets
         self.ema = ema
         self.version = version
-        self.monitor_kwargs = monitor_kwargs if monitor_kwargs is not None else {}
         self.kwargs = kwargs
 
         if isinstance(self._nets, T.nn.Module):
@@ -713,24 +686,19 @@ class BaseEvaluator(_Mixin):
         else:
             self.ema = None
 
-        self.test_loader = None
-        if test_set is not None:
-            self.test_loader = DataLoader(
-                self.test_set,
-                shuffle=False,
-                pin_memory=True,
-                **loader_kwargs
-            )
-            if self.prefetcher:
-                if self.device == 'cpu':
-                    raise ValueError('Cannot use prefetcher on CPU')
+        self._test_loader = test_loader
+        if test_loader is not None and self.prefetcher:
+            if self.device == 'cpu':
+                raise ValueError('Cannot use prefetcher on CPU')
 
-                self.test_loader = DataPrefetcher(self.test_loader, device=self.device)
+            self.test_loader = DataPrefetcher(self._test_loader, device=self.device)
+        else:
+            self.test_loader = self._test_loader
 
         self.mon = mon
         self.logger = logger
-        args = inspect.BoundArguments(inspect.signature(self.mon.initialize), self.monitor_kwargs)
-        self.mon.initialize(current_folder=checkpoint, **args.kwargs)
+        self.mon.initialize(current_folder=checkpoint, print_freq=print_freq,
+                            use_tensorboard=use_tensorboard, not_found_warn=not_found_warn)
         self.mon.iter = 0
         self.mon.num_iters = None
 
@@ -831,7 +799,7 @@ class BaseEvaluator(_Mixin):
         raise NotImplementedError
 
     def evaluate(self, **kwargs):
-        if self.test_set is not None:
+        if self.test_loader is not None:
             if self.ema is not None:
                 if isinstance(self.ema, ModelEMA):
                     self.ema.copy_to()
