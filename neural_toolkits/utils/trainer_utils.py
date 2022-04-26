@@ -560,27 +560,24 @@ class BaseTrainer(ABC, _Mixin):
 
         _execute(optimizer.step, **kwargs)
 
+    @Hooks.on_begin_iteration
+    def _set_model_train(self):
+        if isinstance(self._nets, T.nn.Module):
+            self._nets.train(True)
+        elif isinstance(self._nets, (list, tuple)):
+            for net in self._nets:
+                net.train(True)
+        else:
+            raise NotImplementedError
+
     def train_step(self, **kwargs):
         for batch in mon.iter_batch(self.train_loader):
-            if isinstance(self._nets, T.nn.Module):
-                self._nets.train(True)
-            elif isinstance(self._nets, (list, tuple)):
-                for net in self._nets:
-                    net.train(True)
-            else:
-                raise NotImplementedError
-
             Hooks._execute_hooks(Hooks.BEGIN_ITERATION, self=self, ctx=self.ctx, **kwargs)
             batch = batch_to_device(batch, device=self.device)
             kwargs[BATCH] = batch
             Hooks._execute_hooks(Hooks.BEFORE_UPDATE, self=self, ctx=self.ctx, **kwargs)
             _execute(self.learn, **kwargs)
             Hooks._execute_hooks(Hooks.AFTER_UPDATE, self=self, ctx=self.ctx, **kwargs)
-
-            if self.val_freq is not None:
-                if mon.iter % self.val_freq == 0:
-                    self.eval_step(**kwargs)
-
             Hooks._execute_hooks(Hooks.END_ITERATION, self=self, ctx=self.ctx, **kwargs)
             self.outputs.clear()
 
@@ -588,7 +585,14 @@ class BaseTrainer(ABC, _Mixin):
         if self.process_index == 0:
             self._dump_states()
 
+    @Hooks.on_end_iteration
     def eval_step(self, **kwargs):
+        if self.val_freq is None:
+            return
+
+        if mon.iter % self.val_freq != 0:
+            return
+
         if isinstance(self._nets, T.nn.Module):
             self.nets.eval()
         elif isinstance(self._nets, (list, tuple)):
