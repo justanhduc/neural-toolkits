@@ -18,7 +18,6 @@ from .layer_utils import revert_sync_batchnorm
 
 __all__ = ['BaseTrainer', 'BaseEvaluator', 'Hooks']
 
-
 model_dict = 'model_dict'
 optim_dict = 'optim_dict'
 epoch = 'epoch'
@@ -33,60 +32,84 @@ custom_dict = 'custom_dict'
 BATCH = 'batch'
 
 
+def _execute(fn: Callable, **kwargs) -> None:
+    args = inspect.BoundArguments(inspect.signature(fn), kwargs)
+    fn(*args.args, **args.kwargs)
+
+
 class Hooks:
-    _on_before_training = []
-    _on_after_training = []
-    _on_begin_epoch = []
-    _on_end_epoch = []
-    _on_begin_iteration = []
-    _on_end_iteration = []
-    _on_before_test = []
-    _on_after_test = []
+    BEFORE_TRAINING = 'before_training'
+    AFTER_TRAINING = 'after_training'
+    BEGIN_EPOCH = 'begin_epoch'
+    END_EPOCH = 'end_epoch'
+    BEGIN_ITERATION = 'begin_iteration'
+    END_ITERATION = 'end_iteration'
+    BEFORE_UPDATE = 'before_update'
+    AFTER_UPDATE = 'after_update'
+    BEFORE_TEST = 'before_test'
+    AFTER_TEST = 'after_test'
+
+    _stages = {
+        BEFORE_TRAINING: [], AFTER_TRAINING: [],
+        BEGIN_EPOCH: [], END_EPOCH: [],
+        BEGIN_ITERATION: [], END_ITERATION: [],
+        BEFORE_UPDATE: [], AFTER_UPDATE: [],
+        BEFORE_TEST: [], AFTER_TEST: []
+    }
 
     @staticmethod
     def on_before_training(fn):
-        Hooks._on_before_training.append(fn.__name__)
+        Hooks._stages[Hooks.BEFORE_TRAINING].append(fn)
         return fn
 
     @staticmethod
     def on_after_training(fn):
-        Hooks._on_after_training.append(fn.__name__)
+        Hooks._stages[Hooks.AFTER_TRAINING].append(fn)
         return fn
 
     @staticmethod
     def on_begin_epoch(fn):
-        Hooks._on_begin_epoch.append(fn.__name__)
+        Hooks._stages[Hooks.BEGIN_EPOCH].append(fn)
         return fn
 
     @staticmethod
     def on_end_epoch(fn):
-        Hooks._on_end_epoch.append(fn.__name__)
+        Hooks._stages[Hooks.END_EPOCH].append(fn)
         return fn
 
     @staticmethod
     def on_begin_iteration(fn):
-        Hooks._on_begin_iteration.append(fn.__name__)
+        Hooks._stages[Hooks.BEGIN_ITERATION].append(fn)
         return fn
 
     @staticmethod
     def on_end_iteration(fn):
-        Hooks._on_end_iteration.append(fn.__name__)
+        Hooks._stages[Hooks.END_ITERATION].append(fn)
         return fn
 
     @staticmethod
+    def on_before_update(fn):
+        Hooks._stages[Hooks.BEFORE_UPDATE].append(fn)
+
+    @staticmethod
+    def on_after_update(fn):
+        Hooks._stages[Hooks.AFTER_UPDATE].append(fn)
+
+    @staticmethod
     def on_before_test(fn):
-        Hooks._on_before_test.append(fn.__name__)
+        Hooks._stages[Hooks.BEFORE_TEST].append(fn)
         return fn
 
     @staticmethod
     def on_after_test(fn):
-        Hooks._on_after_test.append(fn.__name__)
+        Hooks._stages[Hooks.AFTER_TEST].append(fn)
         return fn
 
-
-def _execute(fn: Callable, **kwargs) -> None:
-    args = inspect.BoundArguments(inspect.signature(fn), kwargs)
-    fn(*args.args, **args.kwargs)
+    @staticmethod
+    def _execute_hooks(stage: str, **kwargs) -> None:
+        assert stage in Hooks._stages, f'Cannot recognize {stage}. Must be one of {", ".join(Hooks._stages.keys())}'
+        for fn in Hooks._stages[stage]:
+            _execute(fn, **kwargs)
 
 
 def convert_sync_batchnorm(model: Union[T.nn.Module, List[T.nn.Module]]):
@@ -118,9 +141,22 @@ class _Mixin:
             dist.barrier()
             dist.destroy_process_group()
 
-    def _execute_callbacks(self, fn_list: List, **kwargs) -> None:
-        for fn in fn_list:
-            _execute(getattr(self, fn), **kwargs)
+    @staticmethod
+    def as_hook(func: Callable, stage: str):
+        """
+        Registers a function or Trainer's method as a hook.
+        The function or method can optionally take `ctx` as an argument.
+        In such case, the `ctx` of Trainer will be available to the function.
+
+        :param func:
+            a callable function or method
+        :param stage:
+            when this hook is executed. See `Hooks` for a list of stages.
+        :return:
+            `None`.
+        """
+        assert stage in Hooks._stages, f'Cannot recognize {stage}. Must be one of {", ".join(Hooks._stages.keys())}'
+        Hooks._stages[stage].append(func)
 
 
 class BaseTrainer(ABC, _Mixin):
@@ -232,7 +268,7 @@ class BaseTrainer(ABC, _Mixin):
             self._nets.eval()
             self.nets_eval = T.jit.trace(self._nets, sample_inputs)
 
-        if self.ema is not None:
+        if self.ema is not None and self.process_index == 0:
             if isinstance(self.ema, T.nn.Module):
                 self.ema = ModelEMA(self.ema.parameters(), decay=self.ema_decay,
                                     use_num_updates=self.ema_decay_discount)
@@ -242,6 +278,8 @@ class BaseTrainer(ABC, _Mixin):
                             for ema_ in ema]
             else:
                 raise NotImplementedError
+
+            self.as_hook(self._update_ema, Hooks.AFTER_UPDATE)
 
         if self.grad_nan_handling:
             grad_hook = lambda grad: nan_to_num(grad, nan=0, posinf=1e5, neginf=-1e5)
@@ -297,10 +335,7 @@ class BaseTrainer(ABC, _Mixin):
                 self.val_loader = DataPrefetcher(self.val_loader, device=self.device)
 
         if self.lr_scheduler is not None:
-            if scheduler_iter:
-                Hooks.on_end_iteration(self._scheduler_step)
-            else:
-                Hooks.on_end_epoch(self._scheduler_step)
+            self.as_hook(self.lr_scheduler.step, Hooks.END_ITERATION if scheduler_iter else Hooks.END_EPOCH)
 
         self.mon = mon
         self.logger = logger
@@ -312,7 +347,7 @@ class BaseTrainer(ABC, _Mixin):
 
         if args.kwargs.get('num_epochs') is None:
             args.kwargs['num_epochs'] = num_epochs
-                
+
         if self.checkpoint is None:
             self.mon.initialize(model_name, output_root, **args.kwargs)
         else:
@@ -357,8 +392,29 @@ class BaseTrainer(ABC, _Mixin):
 
         self.ctx = edict(batch_to_device(kwargs, self.device))
 
-    def _scheduler_step(self):
-        self.lr_scheduler.step()
+    @Hooks.on_begin_epoch
+    def _initialize_ema(self):
+        if self.ema is None:
+            return
+
+        if self.process_index != 0:
+            return
+
+        if mon.epoch == self.ema_start:
+            Hooks._stages[Hooks.BEGIN_EPOCH].pop(0)
+            if isinstance(self.ema, (list, tuple)):
+                for ema in self.ema:
+                    ema.initialize()
+            else:
+                self.ema.initialize()
+
+    def _update_ema(self):
+        if mon.epoch >= self.ema_start:
+            if isinstance(self.ema, (list, tuple)):
+                for ema in self.ema:
+                    ema.update()
+            else:
+                self.ema.update()
 
     @abstractmethod
     def learn(self, batch, **kwargs) -> Union[None, Dict]:
@@ -494,7 +550,7 @@ class BaseTrainer(ABC, _Mixin):
                     opt.zero_grad()
             else:
                 self.optimizers.zero_grad()
-            
+
         if self.fp16:
             from apex import amp
             with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -514,22 +570,18 @@ class BaseTrainer(ABC, _Mixin):
             else:
                 raise NotImplementedError
 
-            self._execute_callbacks(Hooks._on_begin_iteration, **kwargs)
+            Hooks._execute_hooks(Hooks.BEGIN_ITERATION, self=self, ctx=self.ctx, **kwargs)
             batch = batch_to_device(batch, device=self.device)
             kwargs[BATCH] = batch
+            Hooks._execute_hooks(Hooks.BEFORE_UPDATE, self=self, ctx=self.ctx, **kwargs)
             _execute(self.learn, **kwargs)
-            if self.ema is not None and self.process_index == 0 and mon.epoch >= self.ema_start:
-                if isinstance(self.ema, (list, tuple)):
-                    for ema in self.ema:
-                        ema.update()
-                else:
-                    self.ema.update()
+            Hooks._execute_hooks(Hooks.AFTER_UPDATE, self=self, ctx=self.ctx, **kwargs)
 
             if self.val_freq is not None:
                 if mon.iter % self.val_freq == 0:
                     self.eval_step(**kwargs)
 
-            self._execute_callbacks(Hooks._on_end_iteration, **kwargs)
+            Hooks._execute_hooks(Hooks.END_ITERATION, self=self, ctx=self.ctx, **kwargs)
             self.outputs.clear()
 
         kwargs.pop(BATCH)
@@ -549,31 +601,16 @@ class BaseTrainer(ABC, _Mixin):
         with T.no_grad():
             _execute(self.evaluate, **kwargs)
 
-    @Hooks.on_begin_epoch
-    def _initialize_ema(self):
-        if self.ema is None:
-            return
-
-        if self.process_index != 0:
-            return
-
-        if mon.epoch == self.ema_start:
-            if isinstance(self.ema, (list, tuple)):
-                for ema in self.ema:
-                    ema.initialize()
-            else:
-                self.ema.initialize()
-
     def run_training(self, **kwargs):
         logger.info('Training starts...')
         with T.jit.optimized_execution(self.jit):
-            self._execute_callbacks(Hooks._on_before_training, **kwargs)
+            Hooks._execute_hooks(Hooks.BEFORE_TRAINING, self=self, ctx=self.ctx, **kwargs)
             for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
-                self._execute_callbacks(Hooks._on_begin_epoch, **kwargs)
+                Hooks._execute_hooks(Hooks.BEGIN_EPOCH, self=self, ctx=self.ctx, **kwargs)
                 self.train_step(**kwargs)
-                self._execute_callbacks(Hooks._on_end_epoch, **kwargs)
+                Hooks._execute_hooks(Hooks.END_EPOCH, self=self, ctx=self.ctx, **kwargs)
 
-            self._execute_callbacks(Hooks._on_after_training, **kwargs)
+            Hooks._execute_hooks(Hooks.AFTER_TRAINING, self=self, ctx=self.ctx, **kwargs)
         logger.info('Training finished')
         self.destroy()
 
@@ -808,8 +845,8 @@ class BaseEvaluator(_Mixin):
     def run_evaluation(self, **kwargs):
         with T.jit.optimized_execution(self.jit):
             with T.no_grad():
-                self._execute_callbacks(Hooks._on_before_test, **kwargs)
+                Hooks._execute_hooks(Hooks.BEFORE_TEST, self=self, ctx=self.ctx, **kwargs)
                 self.evaluate(**kwargs)
-                self._execute_callbacks(Hooks._on_after_test, **kwargs)
+                Hooks._execute_hooks(Hooks.AFTER_TEST, self=self, ctx=self.ctx, **kwargs)
 
         self.destroy()
