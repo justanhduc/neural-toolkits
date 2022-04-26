@@ -174,6 +174,7 @@ class BaseTrainer(ABC, _Mixin):
                  grad_nan_handling: bool = False,
                  ema: Union[None, T.nn.Module, List[T.nn.Module]] = None,
                  ema_start: int = 0,
+                 ema_freq: int = 1,
                  ema_decay: float = .999,
                  ema_decay_discount: bool = True,
                  num_epochs: int = None,
@@ -219,6 +220,7 @@ class BaseTrainer(ABC, _Mixin):
         self._nets_ddp = nets
         self.ema = ema
         self.ema_start = ema_start
+        self.ema_freq = ema_freq
         self.ema_decay = ema_decay
         self.ema_decay_discount = ema_decay_discount
         self.monitor_kwargs = monitor_kwargs if monitor_kwargs is not None else {}
@@ -409,7 +411,7 @@ class BaseTrainer(ABC, _Mixin):
                 self.ema.initialize()
 
     def _update_ema(self):
-        if mon.epoch >= self.ema_start:
+        if mon.epoch >= self.ema_start and mon.iter % self.ema_freq:
             if isinstance(self.ema, (list, tuple)):
                 for ema in self.ema:
                     ema.update()
