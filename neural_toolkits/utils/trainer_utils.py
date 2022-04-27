@@ -108,7 +108,7 @@ class Hooks:
     @staticmethod
     def _execute_hooks(stage: str, **kwargs) -> None:
         assert stage in Hooks._stages, f'Cannot recognize {stage}. Must be one of {", ".join(Hooks._stages.keys())}'
-        for fn in Hooks._stages[stage]:
+        for fn in tuple(Hooks._stages[stage]):
             _execute(fn, **kwargs)
 
 
