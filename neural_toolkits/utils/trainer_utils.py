@@ -108,7 +108,7 @@ class Hooks:
     @staticmethod
     def _execute_hooks(stage: str, **kwargs) -> None:
         assert stage in Hooks._stages, f'Cannot recognize {stage}. Must be one of {", ".join(Hooks._stages.keys())}'
-        for fn in tuple(Hooks._stages[stage]):
+        for fn in tuple(Hooks._stages[stage]):  # list of hooks may change due to removal
             _execute(fn, **kwargs)
 
 
@@ -376,7 +376,7 @@ class BaseTrainer(ABC, _Mixin):
             return
 
         if mon.epoch == self.ema_start:
-            Hooks._stages[Hooks.BEGIN_EPOCH].pop(0)
+            Hooks._stages[Hooks.BEGIN_EPOCH].remove(BaseTrainer._initialize_ema)
             if isinstance(self.ema, (list, tuple)):
                 for ema in self.ema:
                     ema.initialize()
