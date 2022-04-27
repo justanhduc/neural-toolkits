@@ -322,7 +322,7 @@ class BaseTrainer(ABC, _Mixin):
             root=output_root,
             current_folder=checkpoint,
             print_freq=print_freq,
-            num_iters=num_iters_per_epoch,
+            num_iters_per_epoch=num_iters_per_epoch,
             num_epochs=num_epochs,
             prefix=run_prefix,
             use_tensorboard=use_tensorboard,
