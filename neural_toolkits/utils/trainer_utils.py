@@ -384,7 +384,7 @@ class BaseTrainer(ABC, _Mixin):
                 self.ema.initialize()
 
     def _update_ema(self):
-        if mon.epoch >= self.ema_start and mon.iter % self.ema_freq:
+        if mon.epoch >= self.ema_start and mon.iter % self.ema_freq == 0:
             if isinstance(self.ema, (list, tuple)):
                 for ema in self.ema:
                     ema.update()
