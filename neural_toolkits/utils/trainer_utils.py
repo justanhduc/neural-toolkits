@@ -46,6 +46,8 @@ class Hooks:
     END_ITERATION = 'end_iteration'
     BEFORE_UPDATE = 'before_update'
     AFTER_UPDATE = 'after_update'
+    BEFORE_VALID = 'before_valid'
+    AFTER_VALID = 'after_valid'
     BEFORE_TEST = 'before_test'
     AFTER_TEST = 'after_test'
 
@@ -54,6 +56,7 @@ class Hooks:
         BEGIN_EPOCH: [], END_EPOCH: [],
         BEGIN_ITERATION: [], END_ITERATION: [],
         BEFORE_UPDATE: [], AFTER_UPDATE: [],
+        BEFORE_VALID: [], AFTER_VALID: [],
         BEFORE_TEST: [], AFTER_TEST: []
     }
 
@@ -90,10 +93,22 @@ class Hooks:
     @staticmethod
     def on_before_update(fn):
         Hooks._stages[Hooks.BEFORE_UPDATE].append(fn)
+        return fn
 
     @staticmethod
     def on_after_update(fn):
         Hooks._stages[Hooks.AFTER_UPDATE].append(fn)
+        return fn
+
+    @staticmethod
+    def on_before_valid(fn):
+        Hooks._stages[Hooks.BEFORE_VALID].append(fn)
+        return fn
+
+    @staticmethod
+    def on_after_valid(fn):
+        Hooks._stages[Hooks.AFTER_VALID].append(fn)
+        return fn
 
     @staticmethod
     def on_before_test(fn):
@@ -278,8 +293,6 @@ class BaseTrainer(ABC, _Mixin):
             else:
                 raise NotImplementedError
 
-            self.as_hook(self._update_ema, Hooks.AFTER_UPDATE)
-
         if self.grad_nan_handling:
             grad_hook = lambda grad: nan_to_num(grad, nan=0, posinf=1e5, neginf=-1e5)
             if isinstance(self._nets, T.nn.Module):
@@ -366,30 +379,6 @@ class BaseTrainer(ABC, _Mixin):
                     self.mon.print_module_summary(net_, sample_inputs_)
 
         self.ctx = edict(batch_to_device(kwargs, self.device))
-
-    @Hooks.on_begin_epoch
-    def _initialize_ema(self):
-        if self.ema is None:
-            return
-
-        if self.process_index != 0:
-            return
-
-        if mon.epoch == self.ema_start:
-            Hooks._stages[Hooks.BEGIN_EPOCH].remove(BaseTrainer._initialize_ema)
-            if isinstance(self.ema, (list, tuple)):
-                for ema in self.ema:
-                    ema.initialize()
-            else:
-                self.ema.initialize()
-
-    def _update_ema(self):
-        if mon.epoch >= self.ema_start and mon.iter % self.ema_freq == 0:
-            if isinstance(self.ema, (list, tuple)):
-                for ema in self.ema:
-                    ema.update()
-            else:
-                self.ema.update()
 
     @abstractmethod
     def learn(self, batch, **kwargs) -> Union[None, Dict]:
@@ -497,10 +486,6 @@ class BaseTrainer(ABC, _Mixin):
                 else:
                     self.ema.load_state_dict(ema_sd)
 
-    def _dump_states(self):
-        states = self.state_dict()
-        mon.dump(ckpt, states, method=pkl_method, keep=self.num_latest_checkpoints)
-
     def update_model(self, loss: T.Tensor, optimizer: T.optim.Optimizer, zero_grad: bool = True, **kwargs):
         """
         Backward the loss and run one step of optimization.
@@ -537,16 +522,6 @@ class BaseTrainer(ABC, _Mixin):
 
         _execute(optimizer.step, **kwargs)
 
-    @Hooks.on_begin_iteration
-    def _set_model_train(self):
-        if isinstance(self._nets, T.nn.Module):
-            self._nets.train(True)
-        elif isinstance(self._nets, (list, tuple)):
-            for net in self._nets:
-                net.train(True)
-        else:
-            raise NotImplementedError
-
     def train_step(self, **kwargs):
         for batch in mon.iter_batch(self.train_loader):
             Hooks._execute_hooks(Hooks.BEGIN_ITERATION, self=self, ctx=self.ctx, **kwargs)
@@ -559,28 +534,6 @@ class BaseTrainer(ABC, _Mixin):
             self.outputs.clear()
 
         kwargs.pop(BATCH)
-        if self.process_index == 0:
-            self._dump_states()
-
-    @Hooks.on_end_iteration
-    def eval_step(self, **kwargs):
-        if self.val_freq is None:
-            return
-
-        if mon.iter % self.val_freq != 0:
-            return
-
-        if isinstance(self._nets, T.nn.Module):
-            self.nets.eval()
-        elif isinstance(self._nets, (list, tuple)):
-            for net in self.nets:
-                net.eval()
-        else:
-            raise NotImplementedError
-
-        self.outputs.clear()
-        with T.no_grad():
-            _execute(self.evaluate, **kwargs)
 
     def run_training(self, **kwargs):
         logger.info('Training starts...')
@@ -594,6 +547,79 @@ class BaseTrainer(ABC, _Mixin):
             Hooks._execute_hooks(Hooks.AFTER_TRAINING, self=self, ctx=self.ctx, **kwargs)
         logger.info('Training finished')
         self.destroy()
+
+    @Hooks.on_end_iteration
+    def eval_step(self, **kwargs):
+        if self.val_freq is None:
+            return
+
+        if mon.iter % self.val_freq != 0:
+            return
+
+        Hooks._execute_hooks(Hooks.BEFORE_VALID, self=self, ctx=self.ctx, **kwargs)
+        self.outputs.clear()
+        with T.no_grad():
+            _execute(self.evaluate, **kwargs)
+        Hooks._execute_hooks(Hooks.AFTER_VALID, self=self, ctx=self.ctx, **kwargs)
+
+    @Hooks.on_begin_epoch
+    def _initialize_ema(self):
+        if self.ema is None:
+            Hooks._stages[Hooks.BEGIN_EPOCH].remove(BaseTrainer._initialize_ema)
+            return
+
+        if self.process_index != 0:
+            Hooks._stages[Hooks.BEGIN_EPOCH].remove(BaseTrainer._initialize_ema)
+            return
+
+        if mon.epoch == self.ema_start:
+            Hooks._stages[Hooks.BEGIN_EPOCH].remove(BaseTrainer._initialize_ema)
+            if isinstance(self.ema, (list, tuple)):
+                for ema in self.ema:
+                    ema.initialize()
+            else:
+                self.ema.initialize()
+
+    @Hooks.on_after_update
+    def _update_ema(self):
+        if self.ema is None:
+            Hooks._stages[Hooks.AFTER_UPDATE].remove(BaseTrainer._update_ema)
+            return
+
+        if mon.epoch >= self.ema_start and mon.iter % self.ema_freq == 0:
+            if isinstance(self.ema, (list, tuple)):
+                for ema in self.ema:
+                    ema.update()
+            else:
+                self.ema.update()
+
+    @Hooks.on_begin_iteration
+    def _set_model_train(self):
+        if isinstance(self.nets, T.nn.Module):
+            self.nets.train(True)
+        elif isinstance(self.nets, (list, tuple)):
+            for net in self.nets:
+                net.train(True)
+        else:
+            raise NotImplementedError
+
+    @Hooks.on_before_valid
+    def _set_model_eval(self):
+        if isinstance(self.nets, T.nn.Module):
+            self.nets.eval()
+        elif isinstance(self.nets, (list, tuple)):
+            for net in self.nets:
+                net.eval()
+        else:
+            raise NotImplementedError
+
+    @Hooks.on_end_epoch
+    def _dump_states(self):
+        if self.process_index != 0:
+            return
+
+        states = self.state_dict()
+        mon.dump(ckpt, states, method=pkl_method, keep=self.num_latest_checkpoints)
 
 
 class BaseEvaluator(_Mixin):
