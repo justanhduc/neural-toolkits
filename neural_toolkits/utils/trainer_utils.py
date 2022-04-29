@@ -324,6 +324,16 @@ def convert_sync_batchnorm(model: Union[T.nn.Module, List[T.nn.Module]]):
 
 
 class _Mixin:
+
+    def run_evaluation(self):
+        pass
+
+    def evaluate(self):
+        pass
+
+    def eval_step(self):
+        pass
+
     def _initialize_distributed_mode(self):
         self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
         self.world_size = int(os.environ.get('WORLD_SIZE', -1))
@@ -505,9 +515,6 @@ class BaseTrainer(ABC, _Mixin):
         else:
             self.val_loader = self._val_loader
 
-        if self.lr_scheduler is not None:
-            self.as_hook(self.lr_scheduler.step, Hooks.END_ITERATION if scheduler_iter else Hooks.END_EPOCH)
-
         self.mon = mon
         self.logger = logger
         if num_iters_per_epoch is None:
@@ -564,11 +571,42 @@ class BaseTrainer(ABC, _Mixin):
 
         self.ctx = edict(batch_to_device(kwargs, self.device))
 
+        # register several pre-defined hooks
+        self.as_hook(self.run_evaluation, Hooks.END_ITERATION)
+        self.as_hook(self._set_model_train, Hooks.BEGIN_ITERATION)
+        self.as_hook(self._set_model_eval, Hooks.BEFORE_VALID)
+        self.as_hook(self._set_model_train, Hooks.AFTER_VALID)
+        self.as_hook(self._dump_states, Hooks.END_EPOCH)
+        if self.ema is not None and self.process_index == 0:
+            self.as_hook(self._initialize_ema, Hooks.BEGIN_EPOCH)
+            self.as_hook(self._update_ema, Hooks.AFTER_UPDATE)
+            self.as_hook(self._use_ema_weights, Hooks.BEFORE_VALID)
+            self.as_hook(self._unuse_ema_weights, Hooks.AFTER_VALID)
+
+        if self.lr_scheduler is not None:
+            self.as_hook(self.lr_scheduler.step, Hooks.END_ITERATION if scheduler_iter else Hooks.END_EPOCH)
+
     @abstractmethod
-    def learn(self, batch, **kwargs) -> Union[None, Dict]:
+    def learn(self, batch: List[Union[T.Tensor, Any]], batch_idx: int, **kwargs) -> None:
+        """
+        An abstract method that must be defined.
+        This method must implement how the loss
+        can be calculated given a :attr:`batch`
+        and then call backward on the loss in one iteration.
+
+        :param batch:
+            a minibatch of data.
+            The order of data is the same as the order of returns from dataset.
+        :param batch_idx:
+            index of the batch
+        :param kwargs:
+            any additional keyword arguments.
+        :return:
+            `None`.
+        """
         pass
 
-    def evaluate(self, **kwargs) -> Union[None, Dict]:
+    def eval_step(self, batch, batch_idx, **kwargs) -> None:
         pass
 
     def register_states(self, states: dict):
@@ -707,17 +745,14 @@ class BaseTrainer(ABC, _Mixin):
         _execute(optimizer.step, **kwargs)
 
     def train_step(self, **kwargs):
-        for batch in mon.iter_batch(self.train_loader):
+        for batch_idx, batch in mon.iter_batch(enumerate(self.train_loader)):
             Hooks._execute_hooks(Hooks.BEGIN_ITERATION, self=self, ctx=self.ctx, **kwargs)
             batch = batch_to_device(batch, device=self.device)
-            kwargs[BATCH] = batch
             Hooks._execute_hooks(Hooks.BEFORE_UPDATE, self=self, ctx=self.ctx, **kwargs)
-            _execute(self.learn, **kwargs)
+            _execute(self.learn, batch=batch, batch_idx=batch_idx, **kwargs)
             Hooks._execute_hooks(Hooks.AFTER_UPDATE, self=self, ctx=self.ctx, **kwargs)
             Hooks._execute_hooks(Hooks.END_ITERATION, self=self, ctx=self.ctx, **kwargs)
             self.outputs.clear()
-
-        kwargs.pop(BATCH)
 
     def run_training(self, **kwargs):
         logger.info('Training starts...')
@@ -732,44 +767,40 @@ class BaseTrainer(ABC, _Mixin):
         logger.info('Training finished')
         self.destroy()
 
-    @Hooks.on_end_iteration
-    def eval_step(self, **kwargs):
+    def run_evaluation(self, **kwargs):
         if self.val_freq is None:
             return
 
         if mon.iter % self.val_freq != 0:
             return
 
-        Hooks._execute_hooks(Hooks.BEFORE_VALID, self=self, ctx=self.ctx, **kwargs)
         self.outputs.clear()
         with T.no_grad():
-            _execute(self.evaluate, **kwargs)
-        Hooks._execute_hooks(Hooks.AFTER_VALID, self=self, ctx=self.ctx, **kwargs)
+            Hooks._execute_hooks(Hooks.BEFORE_VALID, self=self, ctx=self.ctx, **kwargs)
+            self.evaluate(**kwargs)
+            Hooks._execute_hooks(Hooks.AFTER_VALID, self=self, ctx=self.ctx, **kwargs)
 
-    @Hooks.on_begin_epoch
+    def evaluate(self, **kwargs):
+        if self.val_loader is not None:
+            for batch_idx, batch in enumerate(self.val_loader):
+                batch = batch_to_device(batch, device=self.device)
+                with T.no_grad():
+                    _execute(self.eval_step, batch=batch, batch_idx=batch_idx, **kwargs)
+        else:
+            raise NotImplementedError(
+                'To run evaluation, either a validation loader and `eval_step` have to be provided or '
+                '`evaluate` has to be re-implemented.')
+
     def _initialize_ema(self):
-        if self.ema is None:
-            Hooks._stages[Hooks.BEGIN_EPOCH].remove(BaseTrainer._initialize_ema)
-            return
-
-        if self.process_index != 0:
-            Hooks._stages[Hooks.BEGIN_EPOCH].remove(BaseTrainer._initialize_ema)
-            return
-
         if mon.epoch == self.ema_start:
-            Hooks._stages[Hooks.BEGIN_EPOCH].remove(BaseTrainer._initialize_ema)
+            Hooks.remove_hook(Hooks.BEGIN_EPOCH, self._initialize_ema)
             if isinstance(self.ema, (list, tuple)):
                 for ema in self.ema:
                     ema.initialize()
             else:
                 self.ema.initialize()
 
-    @Hooks.on_after_update
     def _update_ema(self):
-        if self.ema is None:
-            Hooks._stages[Hooks.AFTER_UPDATE].remove(BaseTrainer._update_ema)
-            return
-
         if mon.epoch >= self.ema_start and mon.iter % self.ema_freq == 0:
             if isinstance(self.ema, (list, tuple)):
                 for ema in self.ema:
@@ -777,7 +808,22 @@ class BaseTrainer(ABC, _Mixin):
             else:
                 self.ema.update()
 
-    @Hooks.on_begin_iteration
+    def _use_ema_weights(self):
+        if isinstance(self.ema, ModelEMA):
+            self.ema.store()
+            self.ema.copy_to()
+        elif isinstance(self.ema, (list, tuple)):
+            for ema in self.ema:
+                ema.store()
+                ema.copy_to()
+
+    def _unuse_ema_weights(self):
+        if isinstance(self.ema, ModelEMA):
+            self.ema.restore()
+        elif isinstance(self.ema, (list, tuple)):
+            for ema in self.ema:
+                ema.restore()
+
     def _set_model_train(self):
         if isinstance(self.nets, T.nn.Module):
             self.nets.train(True)
@@ -787,7 +833,6 @@ class BaseTrainer(ABC, _Mixin):
         else:
             raise NotImplementedError
 
-    @Hooks.on_before_valid
     def _set_model_eval(self):
         if isinstance(self.nets, T.nn.Module):
             self.nets.eval()
@@ -797,7 +842,6 @@ class BaseTrainer(ABC, _Mixin):
         else:
             raise NotImplementedError
 
-    @Hooks.on_end_epoch
     def _dump_states(self):
         if self.process_index != 0:
             return
@@ -1023,12 +1067,11 @@ class BaseEvaluator(_Mixin):
 
             for batch in mon.iter_batch(self.test_loader):
                 batch = batch_to_device(batch, device=self.device)
-                kwargs[BATCH] = batch
-                _execute(self.eval_step, **kwargs)
+                _execute(self.eval_step, batch=batch, **kwargs)
         else:
             raise NotImplementedError(
                 'To run evaluation, either a test set and `eval_step` have to be provided or '
-                '`evaluate` has to be implemented.')
+                '`evaluate` has to be re-implemented.')
 
     def run_evaluation(self, **kwargs):
         with T.jit.optimized_execution(self.jit):
