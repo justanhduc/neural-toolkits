@@ -784,8 +784,7 @@ class BaseTrainer(ABC, _Mixin):
         if self.val_loader is not None:
             for batch_idx, batch in enumerate(self.val_loader):
                 batch = batch_to_device(batch, device=self.device)
-                with T.no_grad():
-                    _execute(self.eval_step, batch=batch, batch_idx=batch_idx, **kwargs)
+                _execute(self.eval_step, batch=batch, batch_idx=batch_idx, **kwargs)
         else:
             raise NotImplementedError(
                 'To run evaluation, either a validation loader and `eval_step` have to be provided or '
