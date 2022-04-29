@@ -13,7 +13,7 @@ __all__ = ['Conv2d', 'ConvTranspose2d', 'FC', 'Softmax', 'DepthwiseSepConv2d']
 @add_custom_repr
 class Conv2d(nn.Conv2d, _LayerMethod):
     """
-    Extends :class:`torch.nn.Conv2d` with :class:`~neural_toolkits.layers.layers._LayerMethod`.
+    Extends :class:`torch.nn.Conv2d` with :class:`~neural_toolkits.layers.abstract._LayerMethod`.
 
     Parameters
     ----------
@@ -108,7 +108,7 @@ class Conv2d(nn.Conv2d, _LayerMethod):
 @add_custom_repr
 class ConvTranspose2d(nn.ConvTranspose2d, _LayerMethod):
     """
-    Extends :class:`torch.nn.ConvTranspose2d` with :class:`~neural_toolkits.layers.layers._LayerMethod`.
+    Extends :class:`torch.nn.ConvTranspose2d` with :class:`~neural_toolkits.layers.abstract._LayerMethod`.
 
     Parameters
     ----------
@@ -206,7 +206,7 @@ class ConvTranspose2d(nn.ConvTranspose2d, _LayerMethod):
 class FC(nn.Linear, _LayerMethod):
     """
     AKA fully connected layer in deep learning literature.
-    This class extends :class:`torch.nn.Linear` by :class:`~neural_toolkits.layers.layers._LayerMethod`.
+    This class extends :class:`torch.nn.Linear` by :class:`~neural_toolkits.layers.abstract._LayerMethod`.
 
     Parameters
     ----------

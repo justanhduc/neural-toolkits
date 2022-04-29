@@ -27,7 +27,7 @@ def add_custom_repr(cls):
     User should define extra_repr for the decorated class.
 
     :param cls:
-        a subclass of :class:`~neuralnet_pytorch.layers.Module`.
+        a subclass of :class:`~neural_toolkits.layers.Module`.
     """
 
     def _repr(self):

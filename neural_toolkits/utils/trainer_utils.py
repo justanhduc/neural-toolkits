@@ -38,6 +38,37 @@ def _execute(fn: Callable, **kwargs) -> None:
 
 
 class Hooks:
+    """
+    This class contains hooks to be executed at various stages during training a neural network.
+
+    Attributes
+    ----------
+    BEFORE_TRAINING
+        `'before_training'`
+    AFTER_TRAINING
+        `'after_training'`
+    BEGIN_EPOCH
+        `'begin_epoch'`
+    END_EPOCH
+        `'end_epoch'`
+    BEGIN_ITERATION
+        `'begin_iteration'`
+    END_ITERATION
+        `'end_iteration'`
+    BEFORE_UPDATE
+        `'before_update'`
+    AFTER_UPDATE
+        `'after_update'`
+    BEFORE_VALID
+        `'before_valid'`
+    AFTER_VALID
+        `'after_valid'`
+    BEFORE_TEST
+        `'before_test'`
+    AFTER_TEST
+        `'after_test'`
+
+    """
     BEFORE_TRAINING = 'before_training'
     AFTER_TRAINING = 'after_training'
     BEGIN_EPOCH = 'begin_epoch'
@@ -61,62 +92,215 @@ class Hooks:
     }
 
     @staticmethod
-    def on_before_training(fn):
+    def get_hooks(stage: str) -> List[Callable]:
+        """
+        Returns all hooks scheduled to run at :attr:`stage`.
+
+        :param stage:
+            stage of the hook execution. :attr:`stage` must be a recognizable string.
+            See :class:`~BaseTrainer`'s attributes for a list of stages.
+        :return:
+        """
+        assert stage in Hooks._stages, f'Cannot recognize {stage}. Must be one of {", ".join(Hooks._stages.keys())}'
+        return Hooks._stages[stage]
+
+    @staticmethod
+    def remove_hook(stage: str, fn: Callable) -> None:
+        """
+        Removes the :attr:`fn` hook from :attr:`stage`.
+
+        :param stage:
+            stage of the hook execution.
+            :attr:`stage` must be a recognizable string.
+            See :class:`~BaseTrainer`'s attributes for a list of stages.
+        :param fn:
+            the function to be removed from hook.
+        :return:
+            `None`
+        """
+        assert stage in Hooks._stages, f'Cannot recognize {stage}. Must be one of {", ".join(Hooks._stages.keys())}'
+        if fn in Hooks._stages[stage]:
+            Hooks._stages[stage].remove(fn)
+        else:
+            logger.warning(f'Function {fn} is not in the {stage} hook list')
+
+    @staticmethod
+    def on_before_training(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called before training.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.BEFORE_TRAINING].append(fn)
         return fn
 
     @staticmethod
-    def on_after_training(fn):
+    def on_after_training(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called after training.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.AFTER_TRAINING].append(fn)
         return fn
 
     @staticmethod
-    def on_begin_epoch(fn):
+    def on_begin_epoch(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called at the beginning of each epoch.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.BEGIN_EPOCH].append(fn)
         return fn
 
     @staticmethod
-    def on_end_epoch(fn):
+    def on_end_epoch(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called at the end of each epoch.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.END_EPOCH].append(fn)
         return fn
 
     @staticmethod
-    def on_begin_iteration(fn):
+    def on_begin_iteration(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called at the beginning of each iteration.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.BEGIN_ITERATION].append(fn)
         return fn
 
     @staticmethod
-    def on_end_iteration(fn):
+    def on_end_iteration(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called at the end of each iteration.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.END_ITERATION].append(fn)
         return fn
 
     @staticmethod
-    def on_before_update(fn):
+    def on_before_update(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called before the :class:`~BaseTrainer`'s :meth:`~BaseTrainer.learn` step.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.BEFORE_UPDATE].append(fn)
         return fn
 
     @staticmethod
-    def on_after_update(fn):
+    def on_after_update(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called after the :class:`~BaseTrainer`'s :meth:`~BaseTrainer.learn` step.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.AFTER_UPDATE].append(fn)
         return fn
 
     @staticmethod
-    def on_before_valid(fn):
+    def on_before_valid(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called before validation.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.BEFORE_VALID].append(fn)
         return fn
 
     @staticmethod
-    def on_after_valid(fn):
+    def on_after_valid(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called after validation.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.AFTER_VALID].append(fn)
         return fn
 
     @staticmethod
-    def on_before_test(fn):
+    def on_before_test(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called before test.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.BEFORE_TEST].append(fn)
         return fn
 
     @staticmethod
-    def on_after_test(fn):
+    def on_after_test(fn: Callable) -> Callable:
+        """
+        A decorator to add :attr:`~fn` as a hook.
+        :attr:`~fn` should be a function or a method of an inheritance of :class:`~BaseTrainer`.
+        This hook will be called after test.
+
+        :param fn:
+            a function to be executed as hook
+        :return:
+            :attr:`~fn`
+        """
         Hooks._stages[Hooks.AFTER_TEST].append(fn)
         return fn
 
@@ -623,6 +807,10 @@ class BaseTrainer(ABC, _Mixin):
 
 
 class BaseEvaluator(_Mixin):
+    """
+    A template Evaluator class for neural network evaluation and test.
+    """
+
     def __init__(self,
                  checkpoint: str,
                  nets: Union[T.nn.Module, List[T.nn.Module]],

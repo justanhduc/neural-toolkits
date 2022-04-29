@@ -48,9 +48,9 @@ def dimshuffle(x: T.Tensor, pattern: List):
 
     See Also
     --------
-    :func:`~neuralnet_pytorch.utils.shape_padleft`
-    :func:`~neuralnet_pytorch.utils.shape_padright`
-    :func:`~neuralnet_pytorch.utils.swapaxes`
+    :func:`~neural_toolkits.utils.shape_padleft`
+    :func:`~neural_toolkits.utils.shape_padright`
+    :func:`~neural_toolkits.utils.swapaxes`
     """
     assert isinstance(pattern, (list, tuple)), 'pattern must be a list/tuple'
     pattern = [x if x is not None else 'x' for x in pattern]
@@ -78,9 +78,9 @@ def shape_padleft(x: T.Tensor, n_ones: int = 1):
 
     See Also
     --------
-    :func:`~neuralnet_pytorch.utils.dimshuffle`
-    :func:`~neuralnet_pytorch.utils.shape_padright`
-    :func:`~neuralnet_pytorch.utils.swapaxes`
+    :func:`~neural_toolkits.utils.dimshuffle`
+    :func:`~neural_toolkits.utils.shape_padright`
+    :func:`~neural_toolkits.utils.swapaxes`
     """
 
     pattern = ('x',) * n_ones + tuple(range(x.ndimension()))
@@ -102,9 +102,9 @@ def shape_padright(x: T.Tensor, n_ones: int = 1):
 
     See Also
     --------
-    :func:`~neuralnet_pytorch.utils.dimshuffle`
-    :func:`~neuralnet_pytorch.utils.shape_padleft`
-    :func:`~neuralnet_pytorch.utils.swapaxes`
+    :func:`~neural_toolkits.utils.dimshuffle`
+    :func:`~neural_toolkits.utils.shape_padleft`
+    :func:`~neural_toolkits.utils.swapaxes`
     """
 
     pattern = tuple(range(x.ndimension())) + ('x',) * n_ones
@@ -133,9 +133,9 @@ def swapaxes(y: T.Tensor, axis1: int, axis2: int):
 
     See Also
     --------
-    :func:`~neuralnet_pytorch.utils.dimshuffle`
-    :func:`~neuralnet_pytorch.utils.shape_padleft`
-    :func:`~neuralnet_pytorch.utils.shape_padright`
+    :func:`~neural_toolkits.utils.dimshuffle`
+    :func:`~neural_toolkits.utils.shape_padleft`
+    :func:`~neural_toolkits.utils.shape_padright`
     """
 
     ndim = y.ndimension()
@@ -161,13 +161,13 @@ def ravel_index(indices: T.Tensor, shape: List[int]):
 
     >>> import torch as T
     >>> import numpy as np
-    >>> import neuralnet_pytorch as nnt
+    >>> import neural_toolkits as ntk
     >>> shape = (2, 3, 5)
     >>> a = T.arange(np.prod(shape)).view(*shape)
     >>> indices = T.tensor([[1, 0, 1, 1], [0, 1, 2, 1], [1, 0, 4, 3]]).long()
     >>> print(a[list(indices)])
     tensor([16.,  5., 29., 23.])
-    >>> linear_indices = nnt.utils.ravel_index(indices, shape)
+    >>> linear_indices = ntk.utils.ravel_index(indices, shape)
     >>> print(linear_indices)
     tensor([16,  5, 29, 23])
     >>> print(a.flatten()[linear_indices])
@@ -232,27 +232,27 @@ def moveaxis(x: T.Tensor, source: Union[int, List[int]], destination: Union[int,
 
     See Also
     --------
-    :func:`~neuralnet_pytorch.utils.dimshuffle`
-    :func:`~neuralnet_pytorch.utils.swapaxes`
+    :func:`~neural_toolkits.utils.dimshuffle`
+    :func:`~neural_toolkits.utils.swapaxes`
 
     Examples
     --------
 
     >>> x = torch.zeros((3, 4, 5))
-    >>> nnt.utils.moveaxis(x, 0, -1).shape
+    >>> ntk.utils.moveaxis(x, 0, -1).shape
     (4, 5, 3)
-    >>> nnt.utils.moveaxis(x, -1, 0).shape
+    >>> ntk.utils.moveaxis(x, -1, 0).shape
     (5, 3, 4)
 
     These all achieve the same result:
 
     >>> x.permute(2, 1, 0).shape
     (5, 4, 3)
-    >>> nnt.utils.swapaxes(x, 0, -1).shape
+    >>> ntk.utils.swapaxes(x, 0, -1).shape
     (5, 4, 3)
-    >>> nnt.utils.moveaxis(x, [0, 1], [-1, -2]).shape
+    >>> ntk.utils.moveaxis(x, [0, 1], [-1, -2]).shape
     (5, 4, 3)
-    >>> nnt.utils.moveaxis(x, [0, 1, 2], [-1, -2, -3]).shape
+    >>> ntk.utils.moveaxis(x, [0, 1, 2], [-1, -2, -3]).shape
     (5, 4, 3)
 
     """
@@ -326,12 +326,12 @@ def block_diag(*blocks):
 
     See Also
     --------
-    :func:`~neuralnet_pytorch.utils.block_diag_sparse`
+    :func:`~neural_toolkits.utils.block_diag_sparse`
 
     Examples
     --------
 
-    >>> from neuralnet_pytorch.utils import block_diag
+    >>> from neural_toolkits.utils import block_diag
     >>> A = T.tensor([[1, 0],
     ...               [0, 1]])
     >>> B = T.tensor([[3, 4, 5],
@@ -385,16 +385,16 @@ def block_diag_sparse(a: T.Tensor, dense: bool = False):
     Notes
     -----
     This function is for square matrices only. For general cases,
-    use :func:`~neuralnet_pytorch.utils.block_diag`.
+    use :func:`~neural_toolkits.utils.block_diag`.
 
     See Also
     --------
-    :func:`~neuralnet_pytorch.utils.block_diag`
+    :func:`~neural_toolkits.utils.block_diag`
 
     Examples
     --------
 
-    >>> from neuralnet_pytorch.utils import block_diag_sparse
+    >>> from neural_toolkits.utils import block_diag_sparse
     >>> import numpy as np
     >>> a = T.arange(3 * 2 * 4).view(3, 2, 4)
     >>> block_diag_sparse(a)

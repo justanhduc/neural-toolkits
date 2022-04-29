@@ -127,11 +127,11 @@ class GroupNorm(nn.GroupNorm, _LayerMethod):
     the paper `Group Normalization <https://arxiv.org/abs/1803.08494>`__
 
     .. math::
-        y = \frac{x - \mathrm{E}[x]}{ \sqrt{\mathrm{Var}[x] + \epsilon}} * \gamma + \beta
+        y = \\frac{x - E[x]}{ \\sqrt{Var[x] + \\epsilon}} * \\gamma + \\beta
 
     The input channels are separated into :attr:`num_groups` groups, each containing
     ``num_channels / num_groups`` channels. The mean and standard-deviation are calculated
-    separately over the each group. :math:`\gamma` and :math:`\beta` are learnable
+    separately over each group. :math:`\\gamma` and :math:`\\beta` are learnable
     per-channel affine transform parameter vectors of size :attr:`num_channels` if
     :attr:`affine` is ``True``.
     The standard-deviation is calculated via the biased estimator, equivalent to
