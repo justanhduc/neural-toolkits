@@ -4,11 +4,12 @@ import threading
 from queue import Queue
 from scipy.stats import truncnorm
 from typing import Union, List, Tuple
+from numbers import Number
 
 from . import root_logger
 
 __all__ = ['DataLoader', 'DataPrefetcher', 'truncated_normal', 'batch_set_value', 'bulk_to_cuda', 'bulk_to_cuda_sparse',
-           'bulk_to_numpy', 'to_cuda', 'to_cuda_sparse', 'to_numpy', 'batch_to_device', 'batch_to_cuda',
+           'bulk_to_numpy', 'to_cuda', 'to_cuda_sparse', 'to_numpy', 'batch_to_device', 'batch_to_cuda', 'to_tensor',
            'batch_set_tensor', 'ReadWriteLock', 'ListCollate']
 
 
@@ -470,7 +471,7 @@ def to_cuda(x: np.ndarray, non_blocking=False):
         a :class:`torch.Tensor`.
     """
 
-    return T.from_numpy(x).cuda(non_blocking=non_blocking)
+    return to_tensor(x).cuda(non_blocking=non_blocking)
 
 
 def to_cuda_sparse(coo, non_blocking=False):
@@ -545,7 +546,7 @@ def batch_to_device(batch, *args, **kwargs):
         batch_device = batch.to(*args, **kwargs)
         if batch_device is None:  # some objects push data to GPUs but do not return anything
             batch_device = batch
-    elif isinstance(batch, (list, tuple)):
+    elif isinstance(batch, (list, tuple, set)):
         batch_device = [batch_to_device(b, *args, **kwargs) for b in batch]
     elif isinstance(batch, dict):
         batch_device = batch
@@ -570,7 +571,10 @@ def batch_to_cuda(batch, *args, **kwargs):
     return batch_to_device(batch, T.device('cuda'), *args, **kwargs)
 
 
-def to_tensor(x: Union[List, Tuple, np.ndarray, T.Tensor]):
+def to_tensor(x):
+    if isinstance(x, Number):
+        return T.tensor(x)
+
     if T.is_tensor(x):
         return x
 
