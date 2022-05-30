@@ -510,7 +510,7 @@ class BaseTrainer(ABC, _Mixin):
         if val_loader is not None and self.prefetcher:
             if self.device == 'cpu':
                 raise ValueError('Cannot use prefetcher on CPU')
-
+            
             self.val_loader = DataPrefetcher(self._val_loader, device=self.device)
         else:
             self.val_loader = self._val_loader
@@ -744,7 +744,7 @@ class BaseTrainer(ABC, _Mixin):
 
         _execute(optimizer.step, **kwargs)
 
-    def train_step(self, **kwargs):
+    def _train_step(self, **kwargs):
         for batch_idx, batch in mon.iter_batch(enumerate(self.train_loader)):
             Hooks._execute_hooks(Hooks.BEGIN_ITERATION, self=self, ctx=self.ctx, **kwargs)
             batch = batch_to_device(batch, device=self.device)
@@ -755,12 +755,21 @@ class BaseTrainer(ABC, _Mixin):
             self.outputs.clear()
 
     def run_training(self, **kwargs):
+        """
+        Run the training loop.
+        THIS METHOD SHOULD NOT BE OVERRIDDEN!
+
+        :param kwargs:
+            extra arguments
+        :return:
+            `None`
+        """
         logger.info('Training starts...')
         with T.jit.optimized_execution(self.jit):
             Hooks._execute_hooks(Hooks.BEFORE_TRAINING, self=self, ctx=self.ctx, **kwargs)
             for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
                 Hooks._execute_hooks(Hooks.BEGIN_EPOCH, self=self, ctx=self.ctx, **kwargs)
-                self.train_step(**kwargs)
+                self._train_step(**kwargs)
                 Hooks._execute_hooks(Hooks.END_EPOCH, self=self, ctx=self.ctx, **kwargs)
 
             Hooks._execute_hooks(Hooks.AFTER_TRAINING, self=self, ctx=self.ctx, **kwargs)
@@ -768,6 +777,15 @@ class BaseTrainer(ABC, _Mixin):
         self.destroy()
 
     def run_evaluation(self, **kwargs):
+        """
+        Evaluate the trained network during training.
+        THIS METHOD SHOULD NOT BE OVERRIDDEN!
+
+        :param kwargs:
+            extra arguments
+        :return:
+            `None`
+        """
         if self.val_freq is None:
             return
 
@@ -1073,6 +1091,15 @@ class BaseEvaluator(_Mixin):
                 '`evaluate` has to be re-implemented.')
 
     def run_evaluation(self, **kwargs):
+        """
+        Evaluate the trained network.
+        THIS METHOD SHOULD NOT BE OVERRIDDEN!
+
+        :param kwargs:
+            extra arguments
+        :return:
+            `None`
+        """
         with T.jit.optimized_execution(self.jit):
             with T.no_grad():
                 Hooks._execute_hooks(Hooks.BEFORE_TEST, self=self, ctx=self.ctx, **kwargs)
