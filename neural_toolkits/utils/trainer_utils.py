@@ -487,7 +487,7 @@ class BaseTrainer(ABC, _Mixin):
             else:
                 raise NotImplementedError
 
-        if self.grad_nan_handling:
+        if self.grad_nan_handling:  # from NVIDIA's StyleGAN
             grad_hook = lambda grad: nan_to_num(grad, nan=0, posinf=1e5, neginf=-1e5)
             if isinstance(self._nets, T.nn.Module):
                 for p in self._nets.parameters():
