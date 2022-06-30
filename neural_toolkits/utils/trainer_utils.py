@@ -77,6 +77,10 @@ class Hooks:
     END_ITERATION = 'end_iteration'
     BEFORE_UPDATE = 'before_update'
     AFTER_UPDATE = 'after_update'
+    BEFORE_ZEROGRAD = 'before_zerograd'
+    BEFORE_BACKWARD = 'before_backward'
+    BEFORE_OPTIMIZER_STEP = 'before_optimizer_step'
+    AFTER_OPTIMIZER_STEP = 'after_optimizer_step'
     BEFORE_VALID = 'before_valid'
     AFTER_VALID = 'after_valid'
     BEFORE_TEST = 'before_test'
@@ -87,6 +91,8 @@ class Hooks:
         BEGIN_EPOCH: [], END_EPOCH: [],
         BEGIN_ITERATION: [], END_ITERATION: [],
         BEFORE_UPDATE: [], AFTER_UPDATE: [],
+        BEFORE_ZEROGRAD: [], BEFORE_BACKWARD: [],
+        BEFORE_OPTIMIZER_STEP: [], AFTER_OPTIMIZER_STEP: [],
         BEFORE_VALID: [], AFTER_VALID: [],
         BEFORE_TEST: [], AFTER_TEST: []
     }
@@ -729,12 +735,14 @@ class BaseTrainer(ABC, _Mixin):
             raise ValueError
 
         if zero_grad:
+            Hooks._execute_hooks(Hooks.BEFORE_ZEROGRAD, self=self, ctx=self.ctx, **kwargs)
             if isinstance(self.optimizers, (list, tuple)):
                 for opt in self.optimizers:
                     opt.zero_grad()
             else:
                 self.optimizers.zero_grad()
 
+        Hooks._execute_hooks(Hooks.BEFORE_BACKWARD, self=self, ctx=self.ctx, **kwargs)
         if self.fp16:
             from apex import amp
             with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -742,7 +750,9 @@ class BaseTrainer(ABC, _Mixin):
         else:
             _execute(loss.backward, **kwargs)
 
+        Hooks._execute_hooks(Hooks.BEFORE_OPTIMIZER_STEP, self=self, ctx=self.ctx, **kwargs)
         _execute(optimizer.step, **kwargs)
+        Hooks._execute_hooks(Hooks.AFTER_OPTIMIZER_STEP, self=self, ctx=self.ctx, **kwargs)
 
     def _train_step(self, **kwargs):
         for batch_idx, batch in mon.iter_batch(enumerate(self.train_loader)):
