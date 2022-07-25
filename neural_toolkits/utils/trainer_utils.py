@@ -330,6 +330,13 @@ def convert_sync_batchnorm(model: Union[T.nn.Module, List[T.nn.Module]]):
 
 
 class _Mixin:
+    distributed = False
+    local_process_index = None
+    world_size = None
+    process_index = 0
+    master_addr = None
+    master_port = None
+    device = None
 
     def run_evaluation(self):
         pass
@@ -340,16 +347,20 @@ class _Mixin:
     def eval_step(self):
         pass
 
-    def _initialize_distributed_mode(self):
-        self.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
-        self.world_size = int(os.environ.get('WORLD_SIZE', -1))
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = self.master_port
+    @staticmethod
+    def initialize_distributed_mode():
+        _Mixin.local_process_index = int(os.environ.get("LOCAL_RANK", -1))
+        _Mixin.world_size = int(os.environ.get('WORLD_SIZE', -1))
+        _Mixin.master_addr = os.environ['MASTER_ADDR']
+        _Mixin.master_port = os.environ['MASTER_PORT']
         if not dist.is_initialized():
             dist.init_process_group(backend='nccl')
-        self.process_index = dist.get_rank()
-        self.device = T.device("cuda", self.local_process_index)
-        T.cuda.set_device(self.device)
+
+        _Mixin.process_index = dist.get_rank()
+        _Mixin.device = T.device("cuda", _Mixin.local_process_index)
+        T.cuda.set_device(_Mixin.device)
+        _Mixin.distributed = dist.is_initialized()
+        assert _Mixin.distributed, 'Cannot initialize distributed mode'
 
     def destroy(self):
         if dist.is_initialized():
@@ -394,8 +405,6 @@ class BaseTrainer(ABC, _Mixin):
                  num_iters_per_epoch: int = None,
                  val_freq: int = None,
                  device: Union[int, str] = 'cpu',
-                 distributed: bool = False,
-                 master_port: str = '34562',
                  jit: bool = False,
                  fp16: bool = False,
                  sample_inputs: Union[Any, List[Any]] = None,
@@ -420,10 +429,6 @@ class BaseTrainer(ABC, _Mixin):
         self.batch_size = train_loader.batch_size if batch_size is None else batch_size
         self.val_freq = val_freq
         self.kwargs = kwargs
-        self.process_index = 0
-        self.distributed = distributed
-        self.master_port = master_port
-        self.device = 'cpu' if self.distributed else device
         self.fp16 = fp16
         self.jit = jit
         self.lr_scheduler = lr_scheduler
@@ -446,7 +451,6 @@ class BaseTrainer(ABC, _Mixin):
         self.outputs = edict()  # contents are cleared at the end of a training iteration and validation
 
         if self.distributed:
-            self._initialize_distributed_mode()
             self._nets_ddp = convert_sync_batchnorm(nets)
             if isinstance(self._nets_ddp, T.nn.Module):
                 self._nets_ddp.to(self.device)
@@ -465,6 +469,7 @@ class BaseTrainer(ABC, _Mixin):
                 raise NotImplementedError
             self.nets = self._nets_ddp
         else:
+            self.device = device
             self.nets = self._nets
             if isinstance(self._nets, T.nn.Module):
                 self._nets.to(self.device)
@@ -503,6 +508,45 @@ class BaseTrainer(ABC, _Mixin):
                     for p in net.parameters():
                         p.register_hook(grad_hook)
 
+        if self.distributed:
+            if train_loader is not None and not isinstance(train_loader.sampler, T.utils.data.DistributedSampler):
+                sampler = T.utils.data.DistributedSampler(train_loader.dataset, shuffle=True)
+                train_loader = DataLoader(
+                    train_loader.dataset,
+                    train_loader.batch_size,
+                    shuffle=False,
+                    sampler=sampler,
+                    num_workers=train_loader.num_workers,
+                    collate_fn=train_loader.collate_fn,
+                    pin_memory=train_loader.pin_memory,
+                    drop_last=train_loader.drop_last,
+                    timeout=train_loader.timeout,
+                    worker_init_fn=train_loader.worker_init_fn,
+                    multiprocessing_context=train_loader.multiprocessing_context,
+                    generator=train_loader.generator,
+                    prefetch_factor=train_loader.prefetch_factor,
+                    persistent_workers=train_loader.persistent_workers
+                )
+
+            if val_loader is not None and not isinstance(val_loader.sampler, T.utils.data.DistributedSampler):
+                sampler = T.utils.data.DistributedSampler(val_loader.dataset, shuffle=False)
+                val_loader = DataLoader(
+                    val_loader.dataset,
+                    val_loader.batch_size,
+                    shuffle=False,
+                    sampler=sampler,
+                    num_workers=val_loader.num_workers,
+                    collate_fn=val_loader.collate_fn,
+                    pin_memory=val_loader.pin_memory,
+                    drop_last=val_loader.drop_last,
+                    timeout=val_loader.timeout,
+                    worker_init_fn=val_loader.worker_init_fn,
+                    multiprocessing_context=val_loader.multiprocessing_context,
+                    generator=val_loader.generator,
+                    prefetch_factor=val_loader.prefetch_factor,
+                    persistent_workers=val_loader.persistent_workers
+                )
+
         self._train_loader = train_loader
         if self.prefetcher:
             if self.device == 'cpu':
@@ -516,7 +560,7 @@ class BaseTrainer(ABC, _Mixin):
         if val_loader is not None and self.prefetcher:
             if self.device == 'cpu':
                 raise ValueError('Cannot use prefetcher on CPU')
-            
+
             self.val_loader = DataPrefetcher(self._val_loader, device=self.device)
         else:
             self.val_loader = self._val_loader
@@ -778,6 +822,9 @@ class BaseTrainer(ABC, _Mixin):
         with T.jit.optimized_execution(self.jit):
             Hooks._execute_hooks(Hooks.BEFORE_TRAINING, self=self, ctx=self.ctx, **kwargs)
             for _ in mon.iter_epoch(range(mon.epoch, self.num_epochs)):
+                if self.distributed and isinstance(self.train_loader, DataLoader):
+                    self.train_loader.sampler.set_epoch(mon.epoch)
+
                 Hooks._execute_hooks(Hooks.BEGIN_EPOCH, self=self, ctx=self.ctx, **kwargs)
                 self._train_step(**kwargs)
                 Hooks._execute_hooks(Hooks.END_EPOCH, self=self, ctx=self.ctx, **kwargs)
@@ -889,8 +936,6 @@ class BaseEvaluator(_Mixin):
                  prefetcher: bool = False,
                  ema: Union[T.nn.Module, List[T.nn.Module]] = None,
                  device: Union[int, str] = 'cpu',
-                 distributed: bool = False,
-                 master_port: str = '34562',
                  distributed_training: bool = False,
                  fp16: bool = False,
                  jit: bool = False,
@@ -902,10 +947,6 @@ class BaseEvaluator(_Mixin):
                  **kwargs):
         self._nets = nets
         self.prefetcher = prefetcher
-        self.device = device
-        self.process_index = 0
-        self.distributed = distributed
-        self.master_port = master_port
         self.distributed_training = distributed_training
         self.fp16 = fp16
         self.jit = jit
@@ -925,7 +966,6 @@ class BaseEvaluator(_Mixin):
             raise NotImplementedError
 
         if self.distributed:
-            self._initialize_distributed_mode()
             self._nets_ddp = convert_sync_batchnorm(nets)
             if isinstance(self._nets_ddp, T.nn.Module):
                 self._nets_ddp.to(self.device)
@@ -945,6 +985,7 @@ class BaseEvaluator(_Mixin):
                 raise NotImplementedError
             self.nets = self._nets_ddp
         else:
+            self.device = device
             self.nets = self._nets
             if isinstance(self._nets, T.nn.Module):
                 self._nets.to(self.device)
@@ -971,6 +1012,26 @@ class BaseEvaluator(_Mixin):
         else:
             self.ema = None
 
+        if self.distributed:
+            if test_loader is not None and not isinstance(test_loader.sampler, T.utils.data.DistributedSampler):
+                sampler = T.utils.data.DistributedSampler(test_loader.dataset, shuffle=False)
+                test_loader = DataLoader(
+                    test_loader.dataset,
+                    test_loader.batch_size,
+                    shuffle=False,
+                    sampler=sampler,
+                    num_workers=test_loader.num_workers,
+                    collate_fn=test_loader.collate_fn,
+                    pin_memory=test_loader.pin_memory,
+                    drop_last=test_loader.drop_last,
+                    timeout=test_loader.timeout,
+                    worker_init_fn=test_loader.worker_init_fn,
+                    multiprocessing_context=test_loader.multiprocessing_context,
+                    generator=test_loader.generator,
+                    prefetch_factor=test_loader.prefetch_factor,
+                    persistent_workers=test_loader.persistent_workers
+                )
+
         self._test_loader = test_loader
         if test_loader is not None and self.prefetcher:
             if self.device == 'cpu':
@@ -994,7 +1055,7 @@ class BaseEvaluator(_Mixin):
         else:
             raise NotImplementedError
 
-        if self.distributed_training:
+        if self.distributed:
             self._nets = convert_sync_batchnorm(self._nets)
 
         if self.distributed:
@@ -1007,7 +1068,7 @@ class BaseEvaluator(_Mixin):
                               version=version, map_location=map_location)
             self.load_state_dict(states)
 
-        if self.distributed_training:
+        if self.distributed_training and not self.distributed:
             self._nets = revert_sync_batchnorm(self._nets)
 
         if fp16:
