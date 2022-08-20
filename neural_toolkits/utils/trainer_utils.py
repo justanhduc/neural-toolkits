@@ -32,9 +32,9 @@ custom_dict = 'custom_dict'
 BATCH = 'batch'
 
 
-def _execute(fn: Callable, **kwargs) -> None:
+def _execute(fn: Callable, **kwargs) -> Any:
     args = inspect.BoundArguments(inspect.signature(fn), kwargs)
-    fn(*args.args, **args.kwargs)
+    return fn(*args.args, **args.kwargs)
 
 
 class Hooks:
@@ -390,6 +390,7 @@ class BaseTrainer(ABC, _Mixin):
                  nets: Union[T.nn.Module, List[T.nn.Module]],
                  optimizers: Union[T.optim.Optimizer, List[T.optim.Optimizer]],
                  train_loader: T.utils.data.DataLoader,
+                 auto_learn: bool = False,
                  prefetcher: bool = False,
                  val_loader: T.utils.data.DataLoader = None,
                  lr_scheduler: T.optim.lr_scheduler._LRScheduler = None,
@@ -424,6 +425,7 @@ class BaseTrainer(ABC, _Mixin):
         self._nets = nets
         self.optimizers = optimizers
         self.grad_nan_handling = grad_nan_handling
+        self.auto_learn = auto_learn
         self.prefetcher = prefetcher
         self.num_epochs = num_epochs
         self.batch_size = train_loader.batch_size if batch_size is None else batch_size
@@ -637,7 +639,7 @@ class BaseTrainer(ABC, _Mixin):
             self.as_hook(self.lr_scheduler.step, Hooks.END_ITERATION if scheduler_iter else Hooks.END_EPOCH)
 
     @abstractmethod
-    def learn(self, batch: List[Union[T.Tensor, Any]], batch_idx: int, **kwargs) -> None:
+    def learn(self, batch: List[Union[T.Tensor, Any]], batch_idx: int, **kwargs) -> Union[None, T.Tensor]:
         """
         An abstract method that must be defined.
         This method must implement how the loss
@@ -803,7 +805,13 @@ class BaseTrainer(ABC, _Mixin):
             Hooks._execute_hooks(Hooks.BEGIN_ITERATION, self=self, ctx=self.ctx, **kwargs)
             batch = batch_to_device(batch, device=self.device)
             Hooks._execute_hooks(Hooks.BEFORE_UPDATE, self=self, ctx=self.ctx, **kwargs)
-            _execute(self.learn, batch=batch, batch_idx=batch_idx, **kwargs)
+            loss = _execute(self.learn, batch=batch, batch_idx=batch_idx, **kwargs)
+            if self.auto_learn:
+                if not isinstance(loss, T.Tensor):
+                    raise ValueError(f'Expected a scalar loss tensor, got {type(loss)}')
+
+                self.update_model(loss, self.optimizers)
+
             Hooks._execute_hooks(Hooks.AFTER_UPDATE, self=self, ctx=self.ctx, **kwargs)
             Hooks._execute_hooks(Hooks.END_ITERATION, self=self, ctx=self.ctx, **kwargs)
             self.outputs.clear()
