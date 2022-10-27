@@ -16,7 +16,7 @@ from .data_utils import batch_to_device, DataPrefetcher
 from .model_utils import ModelEMA
 from .layer_utils import revert_sync_batchnorm
 
-__all__ = ['BaseTrainer', 'BaseEvaluator', 'Hooks']
+__all__ = ['BaseTrainer', 'BaseEvaluator', 'Hooks', 'save_for_loss']
 
 model_dict = 'model_dict'
 optim_dict = 'optim_dict'
@@ -30,6 +30,12 @@ ema_dict = 'ema_dict'
 pkl_method = 'torch'
 custom_dict = 'custom_dict'
 BATCH = 'batch'
+
+_save_for_loss = edict()
+
+
+def save_for_loss(name: str, obj: Any):
+    _save_for_loss[name] = obj
 
 
 def _execute(fn: Callable, **kwargs) -> Any:
@@ -622,6 +628,7 @@ class BaseTrainer(ABC, _Mixin):
                     self.mon.print_module_summary(net_, sample_inputs_)
 
         self.ctx = edict(batch_to_device(kwargs, self.device))
+        self.ctx.save_for_loss = _save_for_loss
 
         # register several pre-defined hooks
         self.as_hook(self.run_evaluation, Hooks.END_ITERATION)
@@ -815,6 +822,7 @@ class BaseTrainer(ABC, _Mixin):
             Hooks._execute_hooks(Hooks.AFTER_UPDATE, self=self, ctx=self.ctx, **kwargs)
             Hooks._execute_hooks(Hooks.END_ITERATION, self=self, ctx=self.ctx, **kwargs)
             self.outputs.clear()
+            self.ctx.save_for_loss.clear()
 
     def run_training(self, **kwargs):
         """
