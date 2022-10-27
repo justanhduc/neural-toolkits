@@ -34,8 +34,9 @@ BATCH = 'batch'
 _save_for_loss = edict()
 
 
-def save_for_loss(name: str, obj: Any):
-    _save_for_loss[name] = obj
+def save_for_loss(name: str, obj: Any, training=False):
+    if training:
+        _save_for_loss[name] = obj
 
 
 def _execute(fn: Callable, **kwargs) -> Any:
