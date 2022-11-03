@@ -1061,7 +1061,7 @@ class BaseEvaluator(_Mixin):
         self.mon = mon
         self.logger = logger
         self.mon.initialize(current_folder=checkpoint, print_freq=print_freq,
-                            use_tensorboard=use_tensorboard, not_found_warn=not_found_warn)
+                            use_tensorboard=use_tensorboard, not_found_warn=not_found_warn, load_stats=False)
         self.mon.iter = 0
         self.mon.num_iters = None
 

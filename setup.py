@@ -32,10 +32,10 @@ def get_extensions():
         sys.argv.remove("--cuda-ext")
         return [
             CUDAExtension(
-            name='neural_toolkits.ext',
-            sources=ext_src,
-            include_dirs=[ext_include]
-        )]
+                name='neural_toolkits.ext',
+                sources=ext_src,
+                include_dirs=[ext_include]
+            )]
     else:
         return []
 
