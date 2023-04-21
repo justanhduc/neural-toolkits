@@ -1076,16 +1076,14 @@ class BaseEvaluator(_Mixin):
         if self.distributed:
             self._nets = convert_sync_batchnorm(self._nets)
 
-        if checkpoint_file is not None:
-            ckpt = checkpoint_file
-
+        ckpt_file = checkpoint_file if checkpoint_file is not None else ckpt
         if self.distributed:
             if self.process_index == 0:
-                states = mon.load(ckpt, method=pkl_method,
+                states = mon.load(ckpt_file, method=pkl_method,
                                   version=version, map_location='cpu')
                 self.load_state_dict(states)
         else:
-            states = mon.load(ckpt, method=pkl_method,
+            states = mon.load(ckpt_file, method=pkl_method,
                               version=version, map_location=map_location)
             self.load_state_dict(states)
 
