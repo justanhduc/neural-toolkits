@@ -958,6 +958,7 @@ class BaseEvaluator(_Mixin):
                  jit: bool = False,
                  sample_inputs: Union[Any, List[Any]] = None,
                  version: int = -1,
+                 checkpoint_file: str = None,
                  print_freq: int = 1,
                  use_tensorboard: bool = True,
                  not_found_warn: bool = True,
@@ -1074,6 +1075,9 @@ class BaseEvaluator(_Mixin):
 
         if self.distributed:
             self._nets = convert_sync_batchnorm(self._nets)
+
+        if checkpoint_file is not None:
+            ckpt = checkpoint_file
 
         if self.distributed:
             if self.process_index == 0:
