@@ -427,6 +427,7 @@ class BaseTrainer(ABC, _Mixin):
                  excludes: List[str] = None,
                  num_latest_checkpoints: int = -1,
                  checkpoint: str = None,
+                 checkpoint_file: str = None,
                  version: int = -1,
                  **kwargs):
         self._nets = nets
@@ -454,6 +455,7 @@ class BaseTrainer(ABC, _Mixin):
         self.excludes = excludes
         self.includes = includes
         self.checkpoint = checkpoint
+        self.checkpoint_file = checkpoint_file
         self.version = version
         self.num_latest_checkpoints = num_latest_checkpoints
         self.states = {}
@@ -599,7 +601,8 @@ class BaseTrainer(ABC, _Mixin):
             else:
                 raise NotImplementedError
 
-            state_dict: Dict = mon.load(ckpt, method=pkl_method, version=version, map_location=map_location)
+            ckpt_file = ckpt if checkpoint_file is None else checkpoint_file
+            state_dict: Dict = mon.load(ckpt_file, method=pkl_method, version=version, map_location=map_location)
             self.load_state_dict(state_dict)
 
         if backup is not None:
@@ -971,6 +974,8 @@ class BaseEvaluator(_Mixin):
         self.nets = None
         self._nets_ddp = nets
         self.ema = ema
+        self.checkpoint = checkpoint
+        self.checkpoint_file = checkpoint_file
         self.version = version
         self.kwargs = kwargs
 
